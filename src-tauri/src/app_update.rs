@@ -9,7 +9,8 @@ use crate::error::{AppError, AppResult};
 
 const UPDATE_PUBLIC_KEY: &str = include_str!("../updater-public.key");
 const COMPILED_UPDATE_ENDPOINT: Option<&str> = option_env!("MSH_UPDATE_ENDPOINT");
-const DEFAULT_UPDATE_ENDPOINT: &str = "https://github.com/taori2731/minecraft-server-hub-releases/releases/latest/download/latest.json";
+const DEFAULT_UPDATE_ENDPOINT: &str =
+    "https://github.com/taori2731/tomonode-releases/releases/latest/download/latest.json";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

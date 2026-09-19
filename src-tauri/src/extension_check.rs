@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
-    io::Read,
+    io::{Cursor, Read, Seek},
     path::{Path, PathBuf},
 };
 
@@ -17,6 +17,7 @@ use crate::{
 #[derive(Default)]
 struct Metadata {
     id: Option<String>,
+    provided_ids: Vec<String>,
     minecraft: Option<String>,
     loader: Option<String>,
     dependencies: Vec<String>,
@@ -55,11 +56,18 @@ pub fn check(profile: &ServerProfile) -> AppResult<ExtensionCheckReport> {
             .to_string_lossy()
             .to_string();
         let metadata = inspect_archive(path, kind);
-        if let Some(id) = metadata.id.clone() {
-            present_ids.insert(id.to_ascii_lowercase());
-            ids.entry(id.to_ascii_lowercase())
-                .or_default()
-                .push(name.clone());
+        let provided_ids = if metadata.provided_ids.is_empty() {
+            metadata.id.clone().into_iter().collect::<Vec<_>>()
+        } else {
+            metadata.provided_ids.clone()
+        };
+        for id in provided_ids {
+            let normalized = id.to_ascii_lowercase();
+            present_ids.insert(normalized.clone());
+            let files_for_id = ids.entry(normalized).or_default();
+            if !files_for_id.iter().any(|value| value == &name) {
+                files_for_id.push(name.clone());
+            }
         }
         if let Some(loader) = metadata.loader.as_deref() {
             let expected = expected_loader(profile, kind);
@@ -164,6 +172,9 @@ pub fn check(profile: &ServerProfile) -> AppResult<ExtensionCheckReport> {
     })
 }
 
+const MAX_NESTED_ARCHIVE_DEPTH: u8 = 2;
+const MAX_NESTED_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+
 fn inspect_archive(path: &Path, kind: &str) -> Metadata {
     if !matches!(
         path.extension()
@@ -180,13 +191,58 @@ fn inspect_archive(path: &Path, kind: &str) -> Metadata {
     let Ok(mut archive) = ZipArchive::new(file) else {
         return Metadata::default();
     };
-    if let Some(value) = read_zip_text(&mut archive, "fabric.mod.json", 1024 * 1024) {
+    inspect_zip(&mut archive, kind, 0)
+}
+
+fn inspect_zip<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str, depth: u8) -> Metadata {
+    let mut metadata = inspect_zip_metadata(archive, kind);
+    if depth >= MAX_NESTED_ARCHIVE_DEPTH {
+        return metadata;
+    }
+
+    let nested_names = archive
+        .file_names()
+        .filter(|name| {
+            name.starts_with("META-INF/jarjar/") && name.to_ascii_lowercase().ends_with(".jar")
+        })
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for nested_name in nested_names {
+        let Ok(mut entry) = archive.by_name(&nested_name) else {
+            continue;
+        };
+        if entry.size() > MAX_NESTED_ARCHIVE_BYTES {
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        if entry.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        let Ok(mut nested) = ZipArchive::new(Cursor::new(bytes)) else {
+            continue;
+        };
+        let nested_metadata = inspect_zip(&mut nested, kind, depth + 1);
+        metadata.provided_ids.extend(nested_metadata.provided_ids);
+        metadata.dependencies.extend(nested_metadata.dependencies);
+    }
+    metadata.provided_ids = unique_ids(metadata.provided_ids);
+    metadata.dependencies = unique_ids(metadata.dependencies);
+    metadata
+}
+
+fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str) -> Metadata {
+    if !matches!(kind, "mod" | "plugin" | "datapack") {
+        return Metadata::default();
+    }
+    if let Some(value) = read_zip_text(archive, "fabric.mod.json", 1024 * 1024) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&value) {
+            let id = json
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string);
             return Metadata {
-                id: json
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string),
+                provided_ids: id.clone().into_iter().collect(),
+                id,
                 minecraft: json.pointer("/depends/minecraft").and_then(version_value),
                 loader: Some("fabric".into()),
                 dependencies: json
@@ -213,43 +269,13 @@ fn inspect_archive(path: &Path, kind: &str) -> Metadata {
         ("META-INF/mods.toml", "forge"),
         ("META-INF/neoforge.mods.toml", "neoforge"),
     ] {
-        if let Some(value) = read_zip_text(&mut archive, name, 2 * 1024 * 1024) {
-            let id = Regex::new(r#"(?m)^\s*modId\s*=\s*[\"']([^\"']+)"#)
-                .ok()
-                .and_then(|regex| regex.captures(&value))
-                .and_then(|captures| captures.get(1))
-                .map(|value| value.as_str().to_string());
-            let minecraft = Regex::new(
-                r#"(?s)modId\s*=\s*[\"']minecraft[\"'].*?versionRange\s*=\s*[\"']([^\"']+)"#,
-            )
-            .ok()
-            .and_then(|regex| regex.captures(&value))
-            .and_then(|captures| captures.get(1))
-            .map(|value| value.as_str().to_string());
-            let dependencies = Regex::new(r#"(?m)^\s*modId\s*=\s*[\"']([^\"']+)"#)
-                .ok()
-                .map(|regex| {
-                    regex
-                        .captures_iter(&value)
-                        .filter_map(|capture| {
-                            capture.get(1).map(|value| value.as_str().to_string())
-                        })
-                        .filter(|value| value != "minecraft" && Some(value) != id.as_ref())
-                        .collect()
-                })
-                .unwrap_or_default();
-            return Metadata {
-                id,
-                minecraft,
-                loader: Some(loader.into()),
-                dependencies,
-                client_required: false,
-            };
+        if let Some(value) = read_zip_text(archive, name, 2 * 1024 * 1024) {
+            return parse_forge_metadata(&value, loader);
         }
     }
     if kind == "plugin" {
-        if let Some(value) = read_zip_text(&mut archive, "plugin.yml", 1024 * 1024)
-            .or_else(|| read_zip_text(&mut archive, "paper-plugin.yml", 1024 * 1024))
+        if let Some(value) = read_zip_text(archive, "plugin.yml", 1024 * 1024)
+            .or_else(|| read_zip_text(archive, "paper-plugin.yml", 1024 * 1024))
         {
             let field = |name: &str| {
                 Regex::new(&format!(r"(?m)^{}:\s*([^#\r\n]+)", regex::escape(name)))
@@ -258,6 +284,7 @@ fn inspect_archive(path: &Path, kind: &str) -> Metadata {
                     .and_then(|capture| capture.get(1))
                     .map(|value| value.as_str().trim().trim_matches(['\'', '"']).to_string())
             };
+            let id = field("name").map(|value| value.to_ascii_lowercase());
             let dependencies = field("depend")
                 .map(|value| {
                     value
@@ -269,7 +296,8 @@ fn inspect_archive(path: &Path, kind: &str) -> Metadata {
                 })
                 .unwrap_or_default();
             return Metadata {
-                id: field("name").map(|value| value.to_ascii_lowercase()),
+                id: id.clone(),
+                provided_ids: id.into_iter().collect(),
                 minecraft: field("api-version"),
                 loader: Some("paper".into()),
                 dependencies,
@@ -280,7 +308,153 @@ fn inspect_archive(path: &Path, kind: &str) -> Metadata {
     Metadata::default()
 }
 
-fn read_zip_text(archive: &mut ZipArchive<File>, name: &str, max: u64) -> Option<String> {
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum ForgeSection {
+    Other,
+    Mods,
+    Dependency,
+}
+
+fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
+    let mut section = ForgeSection::Other;
+    let mut id = None;
+    let mut minecraft = None;
+    let mut dependencies = Vec::new();
+    let mut dependency_id = None;
+    let mut dependency_mandatory = true;
+    let mut dependency_side = None;
+    let mut dependency_version = None;
+
+    let flush_dependency = |dependency_id: &mut Option<String>,
+                            dependency_mandatory: &mut bool,
+                            dependency_side: &mut Option<String>,
+                            dependency_version: &mut Option<String>,
+                            dependencies: &mut Vec<String>,
+                            minecraft: &mut Option<String>| {
+        let Some(value) = dependency_id.take() else {
+            return;
+        };
+        if value.eq_ignore_ascii_case("minecraft") {
+            if minecraft.is_none() {
+                *minecraft = dependency_version.take();
+            }
+        } else if *dependency_mandatory
+            && !dependency_side
+                .as_deref()
+                .is_some_and(|side| side.eq_ignore_ascii_case("client"))
+        {
+            dependencies.push(value);
+        }
+        *dependency_mandatory = true;
+        *dependency_side = None;
+        *dependency_version = None;
+    };
+
+    for raw_line in value.lines() {
+        let line = raw_line.split('#').next().unwrap_or_default().trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("[[dependencies.") || line.starts_with("[dependencies.") {
+            flush_dependency(
+                &mut dependency_id,
+                &mut dependency_mandatory,
+                &mut dependency_side,
+                &mut dependency_version,
+                &mut dependencies,
+                &mut minecraft,
+            );
+            section = ForgeSection::Dependency;
+            continue;
+        }
+        if line.starts_with("[[mods]]") || line.starts_with("[mods]") {
+            flush_dependency(
+                &mut dependency_id,
+                &mut dependency_mandatory,
+                &mut dependency_side,
+                &mut dependency_version,
+                &mut dependencies,
+                &mut minecraft,
+            );
+            section = ForgeSection::Mods;
+            continue;
+        }
+        if line.starts_with('[') {
+            flush_dependency(
+                &mut dependency_id,
+                &mut dependency_mandatory,
+                &mut dependency_side,
+                &mut dependency_version,
+                &mut dependencies,
+                &mut minecraft,
+            );
+            section = ForgeSection::Other;
+            continue;
+        }
+        let Some((key, raw_value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let parsed = toml_scalar(raw_value);
+        match (section, key) {
+            (ForgeSection::Mods, "modId") if id.is_none() => id = parsed,
+            (ForgeSection::Dependency, "modId") => dependency_id = parsed,
+            (ForgeSection::Dependency, "mandatory") => {
+                dependency_mandatory = parsed
+                    .as_deref()
+                    .is_none_or(|value| value.eq_ignore_ascii_case("true"));
+            }
+            (ForgeSection::Dependency, "side") => dependency_side = parsed,
+            (ForgeSection::Dependency, "versionRange") => dependency_version = parsed,
+            _ => {}
+        }
+    }
+    flush_dependency(
+        &mut dependency_id,
+        &mut dependency_mandatory,
+        &mut dependency_side,
+        &mut dependency_version,
+        &mut dependencies,
+        &mut minecraft,
+    );
+
+    Metadata {
+        provided_ids: id.clone().into_iter().collect(),
+        id,
+        minecraft,
+        loader: Some(loader.into()),
+        dependencies: unique_ids(dependencies),
+        client_required: false,
+    }
+}
+
+fn toml_scalar(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false") {
+        return Some(value.to_string());
+    }
+    if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        return Some(value[1..value.len() - 1].to_string());
+    }
+    None
+}
+
+fn unique_ids(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .filter(|value| seen.insert(value.to_ascii_lowercase()))
+        .collect()
+}
+
+fn read_zip_text<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    name: &str,
+    max: u64,
+) -> Option<String> {
     let mut entry = archive.by_name(name).ok()?;
     if entry.size() > max {
         return None;
@@ -365,7 +539,22 @@ fn item(
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Cursor, Write};
+
     use super::*;
+    use zip::{ZipWriter, write::SimpleFileOptions};
+
+    fn zip_with_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, contents) in entries {
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .unwrap();
+            writer.write_all(contents).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
     #[test]
     fn version_match_is_conservative() {
         assert!(version_matches(">=1.21.11", "1.21.11"));
@@ -376,5 +565,83 @@ mod tests {
     fn built_ins_are_not_reported_missing() {
         assert!(built_in_dependency("minecraft"));
         assert!(!built_in_dependency("cloth-config"));
+    }
+
+    #[test]
+    fn forge_parser_ignores_optional_and_client_only_dependencies() {
+        let metadata = parse_forge_metadata(
+            r#"
+[[mods]]
+modId = "example"
+
+[[dependencies.example]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.20.1]"
+side = "BOTH"
+
+[[dependencies.example]]
+modId = "requiredmod"
+mandatory = true
+side = "BOTH"
+
+[[dependencies.example]]
+modId = "optionalmod"
+mandatory = false
+side = "BOTH"
+
+[[dependencies.example]]
+modId = "clientmod"
+mandatory = true
+side = "CLIENT"
+"#,
+            "forge",
+        );
+
+        assert_eq!(metadata.id.as_deref(), Some("example"));
+        assert_eq!(metadata.minecraft.as_deref(), Some("[1.20.1]"));
+        assert_eq!(metadata.dependencies, vec!["requiredmod"]);
+    }
+
+    #[test]
+    fn nested_jarjar_mod_is_counted_as_provided() {
+        let nested = zip_with_entries(&[(
+            "META-INF/mods.toml",
+            br#"
+[[mods]]
+modId = "puzzlesaccessapi"
+"#,
+        )]);
+        let outer = zip_with_entries(&[
+            (
+                "META-INF/mods.toml",
+                br#"
+[[mods]]
+modId = "puzzleslib"
+
+[[dependencies.puzzleslib]]
+modId = "puzzlesaccessapi"
+mandatory = true
+side = "BOTH"
+"#,
+            ),
+            ("META-INF/jarjar/puzzlesaccessapi-forge.jar", &nested),
+        ]);
+        let mut archive = ZipArchive::new(Cursor::new(outer)).unwrap();
+        let metadata = inspect_zip(&mut archive, "mod", 0);
+
+        assert!(
+            metadata
+                .provided_ids
+                .iter()
+                .any(|value| value == "puzzleslib")
+        );
+        assert!(
+            metadata
+                .provided_ids
+                .iter()
+                .any(|value| value == "puzzlesaccessapi")
+        );
+        assert_eq!(metadata.dependencies, vec!["puzzlesaccessapi"]);
     }
 }

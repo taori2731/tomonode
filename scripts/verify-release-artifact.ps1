@@ -40,7 +40,7 @@ if ([string]::IsNullOrWhiteSpace($ExpectedVersion)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($InstallerPath)) {
-    $InstallerPath = Join-Path $workspaceRoot "artifacts\updates\$ExpectedVersion\Minecraft.Server.Hub_${ExpectedVersion}_x64-setup.exe"
+    $InstallerPath = Join-Path $workspaceRoot "artifacts\updates\$ExpectedVersion\TomoNode_${ExpectedVersion}_x64-setup.exe"
 }
 
 $installer = Resolve-RequiredPath $InstallerPath
@@ -70,7 +70,7 @@ $manifestUrlName = [System.IO.Path]::GetFileName($manifestUri.AbsolutePath)
 $signatureText = Read-RequiredText $signature
 $manifestSignature = [string]$platform.signature
 $manifestVersion = [string]$manifest.version
-$filenameVersion = if ($installerName -match '^Minecraft\.Server\.Hub_(?<version>\d+\.\d+\.\d+)_x64-setup\.exe$') { $Matches.version } else { "" }
+$filenameVersion = if ($installerName -match '^(?:TomoNode|Minecraft\.Server\.Hub)_(?<version>\d+\.\d+\.\d+)_x64-setup\.exe$') { $Matches.version } else { "" }
 
 $packageJson = Get-Content -LiteralPath (Join-Path $workspaceRoot "package.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $packageLockText = Get-Content -LiteralPath (Join-Path $workspaceRoot "package-lock.json") -Raw -Encoding UTF8
