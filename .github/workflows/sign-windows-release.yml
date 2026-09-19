@@ -58,7 +58,7 @@ jobs:
           $cargoToml = Get-Content -LiteralPath "src-tauri/Cargo.toml" -Raw -Encoding UTF8
           $cargoLock = Get-Content -LiteralPath "src-tauri/Cargo.lock" -Raw -Encoding UTF8
           $tauriConfig = Get-Content -LiteralPath "src-tauri/tauri.conf.json" -Raw -Encoding UTF8 | ConvertFrom-Json
-          $cargoVersion = if ($cargoToml -match '(?m)^version\s*=\s*"([^"]+)"$') { $Matches[1] } else { "" }
+          $cargoVersion = if ($cargoToml -match '(?m)^version\s*=\s*"([^"]+)"\s*$') { $Matches[1] } else { "" }
           $cargoLockVersion = if ($cargoLock -match '(?ms)\[\[package\]\]\s*name\s*=\s*"minecraft-server-hub"\s*version\s*=\s*"([^"]+)"') { $Matches[1] } else { "" }
           $versions = [ordered]@{
             package = [string]$package.version
