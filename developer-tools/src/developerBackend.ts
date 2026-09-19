@@ -15,7 +15,7 @@ export const developerBackend = {
       configured: true,
       currentVersion: "0.3.1",
       available: false,
-      endpoint: "https://raw.githubusercontent.com/taori2731/minecraft-server-hub-releases/main/developer-tools/latest.json",
+      endpoint: "https://raw.githubusercontent.com/taori2731/tomonode-releases/main/developer-tools/latest.json",
     };
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<DeveloperUpdateInfo>("check_developer_update");

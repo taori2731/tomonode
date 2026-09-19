@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-export const OFFICIAL_UPDATE_FEED = "https://github.com/taori2731/minecraft-server-hub-releases/releases/latest/download/latest.json";
+export const OFFICIAL_UPDATE_FEED = "https://github.com/taori2731/tomonode-releases/releases/latest/download/latest.json";
 export const OSV_QUERY_ENDPOINT = "https://api.osv.dev/v1/querybatch";
 export const CARGO_WINDOWS_X64_TARGET = "x86_64-pc-windows-msvc";
 export const DEVELOPER_ALLOWED_PERMISSIONS = ["core:default", "dialog:allow-open", "dialog:allow-save"];

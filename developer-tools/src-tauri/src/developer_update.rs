@@ -6,7 +6,7 @@ use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
 
 const UPDATE_PUBLIC_KEY: &str = include_str!("../updater-public.key");
-pub const DEFAULT_UPDATE_ENDPOINT: &str = "https://raw.githubusercontent.com/taori2731/minecraft-server-hub-releases/main/developer-tools/latest.json";
+pub const DEFAULT_UPDATE_ENDPOINT: &str = "https://raw.githubusercontent.com/taori2731/tomonode-releases/main/developer-tools/latest.json";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
