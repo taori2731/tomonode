@@ -254,9 +254,6 @@ jobs:
             -InstallerPath $env:INSTALLER_PATH `
             -Notes "TomoNode $($env:RELEASE_VERSION): fixes Forge dependency checks for optional, client-only, and bundled JarJar dependencies." `
             -OutputPath "artifacts/release/latest.json"
-          if ($LASTEXITCODE -ne 0) {
-            throw "latest.json creation failed."
-          }
 
       - name: Verify the complete local release bundle
         shell: pwsh
