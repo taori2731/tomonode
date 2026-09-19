@@ -54,7 +54,7 @@ jobs:
           }
 
           $package = Get-Content -LiteralPath "package.json" -Raw -Encoding UTF8 | ConvertFrom-Json
-          $packageLock = Get-Content -LiteralPath "package-lock.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+          $packageLock = Get-Content -LiteralPath "package-lock.json" -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
           $cargoToml = Get-Content -LiteralPath "src-tauri/Cargo.toml" -Raw -Encoding UTF8
           $cargoLock = Get-Content -LiteralPath "src-tauri/Cargo.lock" -Raw -Encoding UTF8
           $tauriConfig = Get-Content -LiteralPath "src-tauri/tauri.conf.json" -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -62,8 +62,8 @@ jobs:
           $cargoLockVersion = if ($cargoLock -match '(?ms)\[\[package\]\]\s*name\s*=\s*"minecraft-server-hub"\s*version\s*=\s*"([^"]+)"') { $Matches[1] } else { "" }
           $versions = [ordered]@{
             package = [string]$package.version
-            packageLock = [string]$packageLock.version
-            packageLockRoot = [string]$packageLock.packages[''].version
+            packageLock = [string]$packageLock['version']
+            packageLockRoot = [string]$packageLock['packages']['']['version']
             cargo = [string]$cargoVersion
             cargoLock = [string]$cargoLockVersion
             tauri = [string]$tauriConfig.version
