@@ -84,17 +84,18 @@ test("accepts only authentication-free HTTPS release URLs", () => {
   assert.equal(isSafeUpdateUrl("https://example.com/latest.json#latest"), false);
 });
 
-test("keeps the 0.4.1 release workflow on the Tauri-only signing path", async () => {
+test("keeps the 0.4.5 release workflow on the Tauri-only signing path", async () => {
   const workflow = await readFile(path.join(process.cwd(), ".github", "workflows", "sign-windows-release.yml"), "utf8");
   assert.doesNotMatch(workflow, /signpath|authenticode/i);
   assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY/);
   assert.match(workflow, /RELEASE_REPO_TOKEN/);
-  assert.match(workflow, /RELEASE_VERSION -ne "0\.4\.1"/);
-  assert.match(workflow, /RELEASE_TAG -ne "v0\.4\.1"/);
+  assert.match(workflow, /RELEASE_VERSION -ne "0\.4\.5"/);
+  assert.match(workflow, /RELEASE_TAG -ne "v0\.4\.5"/);
   assert.match(workflow, /--draft/);
   assert.match(workflow, /--draft=false/);
   assert.match(workflow, /--latest/);
-  assert.match(workflow, /Minecraft\.Server\.Hub_\$\{env:RELEASE_VERSION\}_x64-setup\.exe/);
+  assert.match(workflow, /TomoNode_\$\{env:RELEASE_VERSION\}_x64-setup\.exe/);
+  assert.match(workflow, /--title "TomoNode \$env:RELEASE_VERSION"/);
   assert.match(workflow, /verifies_a_built_updater_with_the_embedded_public_key/);
   assert.match(workflow, /releases\/latest\/download\/latest\.json/);
 });
@@ -154,8 +155,8 @@ test("inspects legacy and TomoNode workspaces without using the root directory n
 });
 
 test("keeps the consumer and Developer Tools update feeds separate", async () => {
-  const consumerFeed = "https://github.com/taori2731/minecraft-server-hub-releases/releases/latest/download/latest.json";
-  const developerFeed = "https://raw.githubusercontent.com/taori2731/minecraft-server-hub-releases/main/developer-tools/latest.json";
+  const consumerFeed = "https://github.com/taori2731/tomonode-releases/releases/latest/download/latest.json";
+  const developerFeed = "https://raw.githubusercontent.com/taori2731/tomonode-releases/main/developer-tools/latest.json";
   const generalSource = await readFile(path.join(process.cwd(), "scripts", "developer-inspection.mjs"), "utf8");
   const developerSource = await readFile(path.join(process.cwd(), "developer-tools", "src-tauri", "src", "developer_update.rs"), "utf8");
   assert.ok(generalSource.includes(consumerFeed));
