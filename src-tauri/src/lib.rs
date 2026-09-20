@@ -1611,13 +1611,19 @@ async fn get_runtime_status(
 
 #[tauri::command]
 fn get_logs(server_id: String, state: State<'_, AppState>) -> Vec<LogEntry> {
+    const UI_LOG_LIMIT: usize = 1_000;
     state
         .logs
         .lock()
         .unwrap()
         .get(&server_id)
-        .cloned()
+        .map(|entries| tail_logs(entries, UI_LOG_LIMIT))
         .unwrap_or_default()
+}
+
+fn tail_logs(entries: &[LogEntry], limit: usize) -> Vec<LogEntry> {
+    let start = entries.len().saturating_sub(limit);
+    entries[start..].to_vec()
 }
 
 #[tauri::command]
@@ -5001,10 +5007,12 @@ mod tests {
         is_reserved_windows_name, is_valid_delete_confirmation, read_recent_audit,
         registered_ports_for_transport, render_server_properties, resolve_delete_backup_mode,
         safe_folder_name, should_block_app_exit, should_cleanup_external_access,
-        should_restore_main_window, validate_create_input, validate_public_access_profile,
-        validate_server_delete_target,
+        should_restore_main_window, tail_logs, validate_create_input,
+        validate_public_access_profile, validate_server_delete_target,
     };
-    use crate::models::{BasicSettings, CreateServerInput, PalworldSettings, ServerProfile};
+    use crate::models::{
+        BasicSettings, CreateServerInput, LogEntry, PalworldSettings, ServerProfile,
+    };
 
     fn input() -> CreateServerInput {
         CreateServerInput {
@@ -5205,6 +5213,30 @@ mod tests {
         assert_eq!(entries[0].id, "entry-11");
         assert_eq!(entries[4].id, "entry-7");
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn keeps_log_storage_unchanged_while_returning_only_the_recent_ui_tail() {
+        let entries = (0..1_005)
+            .map(|index| LogEntry {
+                timestamp: format!("00:00:{index:02}"),
+                level: "INFO".into(),
+                message: format!("line-{index}"),
+            })
+            .collect::<Vec<_>>();
+        let tail = tail_logs(&entries, 1_000);
+        assert_eq!(entries.len(), 1_005);
+        assert_eq!(tail.len(), 1_000);
+        assert_eq!(
+            tail.first().map(|entry| entry.message.as_str()),
+            Some("line-5")
+        );
+        assert_eq!(
+            tail.last().map(|entry| entry.message.as_str()),
+            Some("line-1004")
+        );
+        assert!(tail_logs(&entries, 0).is_empty());
+        assert_eq!(tail_logs(&entries, 2_000).len(), entries.len());
     }
 
     #[test]

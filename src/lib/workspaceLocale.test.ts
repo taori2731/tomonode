@@ -5,11 +5,11 @@ import type { AppLocale } from "./i18n";
 const locales: readonly AppLocale[] = ["ja", "en", "zh-CN", "zh-TW", "ko", "es", "de", "fr", "pt-BR"];
 
 describe("workspace release announcements", () => {
-  it("publishes the 0.4.6 support-policy update in all nine locales", () => {
+  it("publishes the 0.4.7 support-policy update in all nine locales", () => {
     for (const locale of locales) {
       const announcements = workspaceAnnouncements(locale);
       expect(announcements).toHaveLength(3);
-      expect(announcements[0].title).toContain("0.4.6");
+      expect(announcements[0].title).toContain("0.4.7");
       expect(announcements.every((item) => item.body.trim().length > 0)).toBe(true);
     }
   });

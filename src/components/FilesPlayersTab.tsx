@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { backend, confirmDanger } from "../lib/backend";
-import type { FixedPlayerPreset, PlayerAccessEntry, PlayerAccessKind, RuntimeStatus, ServerFileEntry, ServerProfile } from "../types";
+import type { FixedPlayerPreset, PlayerAccessEntry, PlayerAccessKind, RuntimeStatus, ServerFileEntry, ServerProfile, UpdatePlayerAccessInput } from "../types";
 import { Icon } from "./Icon";
 import { PlayerFace } from "./PlayerFace";
 import { useI18n } from "../lib/i18n";
@@ -29,6 +29,33 @@ const floodgateAccessTab: (typeof javaAccessTabs)[number] = {
 };
 
 type PlayerAccessProps = { server: ServerProfile; status: RuntimeStatus; notify: (message: string) => void; fail: (message: string) => void };
+
+type OnlinePlayerAction = "op" | "ban";
+
+/**
+ * Build the access mutation for an online-player action in one place.
+ *
+ * Java BAN is an addition to banned-players.json (`add: true`), while
+ * Bedrock's equivalent is removing the player from the allowlist
+ * (`add: false`). Keeping that distinction next to the kind mapping avoids
+ * accidentally sending `pardon` when the Java BAN button is pressed.
+ */
+export function onlinePlayerAccessInput(
+  serverId: string,
+  playerName: string,
+  action: OnlinePlayerAction,
+  isBedrock: boolean,
+): UpdatePlayerAccessInput {
+  const isBan = action === "ban";
+  const kind = action === "op" ? "operators" : isBedrock ? "whitelist" : "banned_players";
+  return {
+    serverId,
+    kind,
+    target: playerName,
+    add: action === "op" || !isBedrock,
+    reason: isBan && !isBedrock ? "Banned from the online player list." : undefined,
+  };
+}
 
 export function PlayerAccessTab({ server, status, notify, fail }: PlayerAccessProps) {
   const isBedrock = server.serverType === "bedrock";
@@ -127,7 +154,7 @@ export function PlayerAccessTab({ server, status, notify, fail }: PlayerAccessPr
   };
 
   const validTarget = kind === "banned_ips" ? target.trim().length >= 7 : isBedrock || isFloodgateWhitelist ? target.trim().length > 0 && target.trim().length <= 32 && !/[\r\n\t]/.test(target) : /^[A-Za-z0-9_]{3,16}$/.test(target.trim());
-  const manageOnlinePlayer = async (playerName: string, action: "op" | "ban") => {
+  const manageOnlinePlayer = async (playerName: string, action: OnlinePlayerAction) => {
     const label = action === "op" ? (isBedrock ? "オペレーターにする" : "OPにする") : (isBedrock ? "許可リストから外す" : "BANする");
     const detail = isBedrock && action === "ban"
       ? "統合版BDSにはJava版と同じBAN一覧がないため、許可リストから外します。許可リストが有効なサーバーで再参加を防げます。"
@@ -135,7 +162,7 @@ export function PlayerAccessTab({ server, status, notify, fail }: PlayerAccessPr
     if (!await confirmDanger(`${playerName} を「${label}」しますか？\n${detail}`)) return;
     setBusy(true);
     try {
-      await backend.updatePlayerAccess({ serverId: server.id, kind: action === "op" ? "operators" : isBedrock ? "whitelist" : "banned_players", target: playerName, add: action === "op", reason: action === "ban" && !isBedrock ? "Banned from the online player list." : undefined });
+      await backend.updatePlayerAccess(onlinePlayerAccessInput(server.id, playerName, action, isBedrock));
       notify(`${playerName} に「${label}」を反映しました`);
       if (kind === (action === "op" ? "operators" : isBedrock ? "whitelist" : "banned_players")) window.setTimeout(refresh, 700);
     } catch (failure) { fail(String(failure)); }

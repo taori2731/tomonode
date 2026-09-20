@@ -327,6 +327,7 @@ fn incomplete_world_issue(profile: &ServerProfile) -> Option<DiagnosisIssue> {
 fn classify_logs(logs: &[String]) -> Vec<DiagnosisIssue> {
     let joined = logs.join("\n");
     let mut issues = client_only_mod_issue(logs);
+    issues.extend(iron_spellbooks_loot_table_issue(logs));
     let patterns = [
         (
             "unsupported-class",
@@ -425,6 +426,44 @@ fn classify_logs(logs: &[String]) -> Vec<DiagnosisIssue> {
         },
     ));
     issues
+}
+
+/// Iron's Spells 'n Spellbooks 1.20.1-3.16.3 is known to log two non-fatal
+/// loot-table parse warnings on Minecraft 1.20.1: one table is missing the
+/// required `name` field and another uses the newer
+/// `minecraft:set_written_book_pages` function.  Surface the pair as one
+/// compatibility warning so users get safe update guidance instead of being
+/// encouraged to edit a third-party JAR in place.
+fn iron_spellbooks_loot_table_issue(logs: &[String]) -> Vec<DiagnosisIssue> {
+    let related = logs
+        .iter()
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("irons_spellbooks")
+                && ((lower.contains("missing name") && lower.contains("catacombs/crypt_loot"))
+                    || (lower.contains("minecraft:set_written_book_pages")
+                        && lower.contains("citadel/citadel_tomes")))
+        })
+        .take(5)
+        .map(|line| redact(line))
+        .collect::<Vec<_>>();
+    if related.is_empty() {
+        return Vec::new();
+    }
+    vec![issue(
+        "iron-spells-loot-table-compatibility",
+        "warning",
+        "Iron's Spells 'n SpellbooksのLoot Table互換性警告を検出しました",
+        "catacombs/crypt_lootまたはcitadel/citadel_tomesの報酬テーブルが読み込まれず、該当ダンジョンの報酬や書籍ページ生成に影響する可能性があります。サーバー全体の起動失敗とは限りません。",
+        "irons_spellbooks 1.20.1-3.16.3のデータ形式が、実行中のMinecraft 1.20.1のLoot Table仕様と一致していません（name不足／minecraft:set_written_book_pages未対応）。",
+        &[
+            "Iron's Spells 'n Spellbooksの配布元でMinecraft 1.20.1・Forge向けの対応版とCitadel依存版を確認し、更新前にサーバーをバックアップしてください。",
+            "JAR内のLoot Tableを直接書き換えず、同じMinecraft／Forge向けの公式修正版へ置き換えてください。",
+            "更新後にサーバー診断を再実行し、関連ログから同じ警告が消えたか確認してください。",
+        ],
+        related,
+        false,
+    )]
 }
 
 /// Forge can load a mod's common entrypoint before it has a chance to route
@@ -713,6 +752,29 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.id == "oom"));
         assert!(issues.iter().any(|issue| issue.id == "bind"));
         assert!(issues.iter().any(|issue| issue.id == "mod-dependency-log"));
+    }
+
+    #[test]
+    fn classifies_iron_spellbooks_loot_table_warnings_as_non_fatal_compatibility_issue() {
+        let logs = vec![
+            "[Server thread/WARN] [minecraft/LootDataManager]: Couldn't parse loot table irons_spellbooks:catacombs/crypt_loot: Missing name".into(),
+            "[Server thread/WARN] [minecraft/LootDataManager]: Couldn't parse loot table irons_spellbooks:citadel/citadel_tomes: Unknown type minecraft:set_written_book_pages".into(),
+        ];
+        let issues = classify_logs(&logs);
+        let issue = issues
+            .iter()
+            .find(|value| value.id == "iron-spells-loot-table-compatibility")
+            .expect("Iron's Spells loot table warning should be diagnosed");
+        assert_eq!(issue.severity, "warning");
+        assert!(issue.what_happened.contains("Loot Table互換性警告"));
+        assert!(issue.likely_cause.contains("name不足"));
+        assert!(
+            issue
+                .next_actions
+                .iter()
+                .any(|action| action.contains("直接書き換えず"))
+        );
+        assert_eq!(issue.related_logs.len(), 2);
     }
 
     #[test]

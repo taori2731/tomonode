@@ -48,15 +48,15 @@ const announcementText: Record<AppLocale, readonly string[]> = {
 
 export function workspaceAnnouncements(locale: AppLocale) {
   const titles: Record<AppLocale, readonly string[]> = {
-    ja: [`${brand.productName} 0.4.6`, "料金プランを廃止し、任意支援へ", "高度な運用を全員へ"],
-    en: [`${brand.productName} 0.4.6`, "Paid plans removed; optional support", "Advanced operations for everyone"],
-    "zh-CN": [`${brand.productName} 0.4.6`, "移除付费方案，支持完全自愿", "高级运维面向所有人"],
-    "zh-TW": [`${brand.productName} 0.4.6`, "移除付費方案，支援完全自願", "進階運作提供給所有人"],
-    ko: [`${brand.productName} 0.4.6`, "유료 플랜 폐지, 응원은 선택 사항", "모두를 위한 고급 운영"],
-    es: [`${brand.productName} 0.4.6`, "Planes de pago eliminados; apoyo opcional", "Operaciones avanzadas para todos"],
-    de: [`${brand.productName} 0.4.6`, "Kostenpflichtige Angebote entfernt; Unterstützung freiwillig", "Erweiterter Betrieb für alle"],
-    fr: [`${brand.productName} 0.4.6`, "Offres payantes supprimées ; soutien facultatif", "Opérations avancées pour tous"],
-    "pt-BR": [`${brand.productName} 0.4.6`, "Planos pagos removidos; apoio opcional", "Operações avançadas para todos"],
+    ja: [`${brand.productName} 0.4.7`, "料金プランを廃止し、任意支援へ", "高度な運用を全員へ"],
+    en: [`${brand.productName} 0.4.7`, "Paid plans removed; optional support", "Advanced operations for everyone"],
+    "zh-CN": [`${brand.productName} 0.4.7`, "移除付费方案，支持完全自愿", "高级运维面向所有人"],
+    "zh-TW": [`${brand.productName} 0.4.7`, "移除付費方案，支援完全自願", "進階運作提供給所有人"],
+    ko: [`${brand.productName} 0.4.7`, "유료 플랜 폐지, 응원은 선택 사항", "모두를 위한 고급 운영"],
+    es: [`${brand.productName} 0.4.7`, "Planes de pago eliminados; apoyo opcional", "Operaciones avanzadas para todos"],
+    de: [`${brand.productName} 0.4.7`, "Kostenpflichtige Angebote entfernt; Unterstützung freiwillig", "Erweiterter Betrieb für alle"],
+    fr: [`${brand.productName} 0.4.7`, "Offres payantes supprimées ; soutien facultatif", "Opérations avancées pour tous"],
+    "pt-BR": [`${brand.productName} 0.4.7`, "Planos pagos removidos; apoio opcional", "Operações avançadas para todos"],
   };
   return announcementText[locale].map((body, index) => ({ date: ["2026-09-14", "2026-09-13", "2026-09-12"][index], tag: ["APP", "SUPPORT", "OPERATIONS"][index], title: titles[locale][index], body }));
 }

@@ -86,6 +86,15 @@ const sameStatus = (left?: RuntimeStatus, right?: RuntimeStatus) => Boolean(left
 const sameLogs = (left: LogEntry[], right: LogEntry[]) => left.length === right.length
   && left.every((item, index) => item.timestamp === right[index]?.timestamp && item.level === right[index]?.level && item.message === right[index]?.message);
 
+export function createRefreshGuard(refresh: () => Promise<void>) {
+  let inFlight = false;
+  return async () => {
+    if (inFlight) return;
+    inFlight = true;
+    try { await refresh(); } finally { inFlight = false; }
+  };
+}
+
 function useTheme() {
   const [mode, setMode] = useState<ThemeMode>(() => {
     const saved = localStorage.getItem("server-hub:theme:v1");
@@ -193,46 +202,53 @@ export function AppContent() {
   useEffect(() => {
     if (!selectedId) return;
     let active = true;
-    let refreshing = false;
-    const refresh = async () => {
-      if (refreshing) return;
-      refreshing = true;
-      try {
-        const next = await backend.status(selectedId);
-        if (active) setStatuses((current) => sameStatus(current[selectedId], next) ? current : { ...current, [selectedId]: next });
-      } finally { refreshing = false; }
-    };
+    const refresh = createRefreshGuard(async () => {
+      if (!active || document.hidden) return;
+      const next = await backend.status(selectedId);
+      if (active) setStatuses((current) => sameStatus(current[selectedId], next) ? current : { ...current, [selectedId]: next });
+    });
     refresh().catch(() => undefined);
     const interval = ["running", "starting"].includes(selectedStatus.state) ? 1_000 : 3_000;
     const timer = window.setInterval(() => refresh().catch(() => undefined), interval);
-    return () => { active = false; window.clearInterval(timer); };
+    const onVisibilityChange = () => { if (!document.hidden) refresh().catch(() => undefined); };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => { active = false; window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); };
   }, [selectedId, selectedStatus.state]);
 
   useEffect(() => {
     const background = servers.filter((server) => server.id !== selectedId);
     if (background.length === 0) return;
     let active = true;
-    const refresh = async () => {
+    const refresh = createRefreshGuard(async () => {
+      if (!active || document.hidden) return;
       const results = await Promise.all(background.map(async (server) => [server.id, await backend.status(server.id)] as const));
       if (!active) return;
       setStatuses((current) => {
         if (results.every(([id, status]) => sameStatus(current[id], status))) return current;
         return { ...current, ...Object.fromEntries(results) };
       });
-    };
+    });
     refresh().catch(() => undefined);
     const timer = window.setInterval(() => refresh().catch(() => undefined), 10_000);
-    return () => { active = false; window.clearInterval(timer); };
+    const onVisibilityChange = () => { if (!document.hidden) refresh().catch(() => undefined); };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => { active = false; window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); };
   }, [servers, selectedId]);
 
   useEffect(() => {
     if (!selectedId) { setLogs([]); return; }
     let active = true;
-    const refresh = () => backend.logs(selectedId).then((entries) => active && setLogs((current) => sameLogs(current, entries) ? current : entries)).catch(() => undefined);
-    refresh();
+    const refresh = createRefreshGuard(async () => {
+      if (!active || document.hidden) return;
+      const entries = await backend.logs(selectedId);
+      if (active) setLogs((current) => sameLogs(current, entries) ? current : entries);
+    });
+    refresh().catch(() => undefined);
     const shouldPoll = selectedStatus.state === "running" && (activeTab === "overview" || activeTab === "console");
     const timer = shouldPoll ? window.setInterval(refresh, 2_000) : undefined;
-    return () => { active = false; window.clearInterval(timer); };
+    const onVisibilityChange = () => { if (!document.hidden) refresh().catch(() => undefined); };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => { active = false; window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); };
   }, [selectedId, selectedStatus.state, activeTab]);
 
   useEffect(() => {

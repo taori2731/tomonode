@@ -261,20 +261,8 @@ pub fn start(
         .take()
         .ok_or_else(|| AppError::Other("サーバーエラー出力を取得できません".into()))?;
 
-    spawn_log_reader(
-        app.clone(),
-        profile.id.clone(),
-        stdout,
-        logs.clone(),
-        "INFO",
-    );
-    spawn_log_reader(
-        app.clone(),
-        profile.id.clone(),
-        stderr,
-        logs.clone(),
-        "ERROR",
-    );
+    spawn_log_reader(profile.id.clone(), stdout, logs.clone(), "INFO");
+    spawn_log_reader(profile.id.clone(), stderr, logs.clone(), "ERROR");
 
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
@@ -740,7 +728,6 @@ fn parse_tps(line: &str) -> Option<f32> {
 }
 
 fn spawn_log_reader<R: std::io::Read + Send + 'static>(
-    app: AppHandle,
     server_id: String,
     reader: R,
     logs: LogMap,
@@ -757,12 +744,11 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
             {
                 let mut all_logs = logs.lock().unwrap();
                 let server_logs = all_logs.entry(server_id.clone()).or_default();
-                server_logs.push(entry.clone());
+                server_logs.push(entry);
                 if server_logs.len() > 5_000 {
                     server_logs.drain(..500);
                 }
             }
-            let _ = app.emit("server-log", (&server_id, &entry));
         }
     });
 }

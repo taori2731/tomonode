@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import App from "./App";
+import App, { createRefreshGuard } from "./App";
 import { backend } from "./lib/backend";
 import { brand } from "./lib/brand";
 import { getRebrandCopy } from "./lib/rebrandLocale";
@@ -15,6 +15,23 @@ describe(brand.productName, () => {
     await backend.start("demo-paper");
     await backend.stop("demo-vanilla");
     await backend.stop("demo-palworld");
+  });
+
+  it("does not overlap status, log, or background refresh work", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const refresh = vi.fn(() => pending);
+    const guarded = createRefreshGuard(refresh);
+
+    const first = guarded();
+    const second = guarded();
+    await Promise.resolve();
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    release();
+    await Promise.all([first, second]);
+    await guarded();
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 
   it("renders the primary dashboard and server state", async () => {
