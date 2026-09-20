@@ -22,6 +22,11 @@ struct Metadata {
     loader: Option<String>,
     dependencies: Vec<String>,
     client_required: bool,
+    /// Some client-only Forge mods do not declare a `side = "CLIENT"`
+    /// dependency.  Their own entrypoint still contains an explicit warning
+    /// (for example RPG-HUD's "client-side-only" message), which is a strong
+    /// enough signal to stop a dedicated-server launch before Forge crashes.
+    client_only_marker: bool,
 }
 
 pub fn check(profile: &ServerProfile) -> AppResult<ExtensionCheckReport> {
@@ -105,6 +110,24 @@ pub fn check(profile: &ServerProfile) -> AppResult<ExtensionCheckReport> {
                 format!("{name} はクライアント側にも導入が必要と記録されています。"),
                 vec![name.clone()],
                 "参加する友達へ同じ版を案内してください",
+            ));
+        }
+        if metadata.client_only_marker
+            && kind == "mod"
+            && matches!(
+                profile.server_type.as_str(),
+                "fabric" | "forge" | "neoforge"
+            )
+        {
+            items.push(item(
+                "error",
+                "client-only-mod",
+                "専用サーバーにクライアント専用Modがあります",
+                format!(
+                    "{name} はクライアント専用であることを自身のコード内で示しています。Dedicated Serverのmodsフォルダーへ置くと起動時に終了する可能性があります。"
+                ),
+                vec![name.clone()],
+                "このModをサーバーのmodsフォルダーから外し、必要なら参加者側のクライアントにだけ導入してください",
             ));
         }
         parsed.push((name, metadata));
@@ -196,6 +219,9 @@ fn inspect_archive(path: &Path, kind: &str) -> Metadata {
 
 fn inspect_zip<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str, depth: u8) -> Metadata {
     let mut metadata = inspect_zip_metadata(archive, kind);
+    if depth == 0 && kind == "mod" {
+        metadata.client_only_marker = archive_contains_client_only_marker(archive);
+    }
     if depth >= MAX_NESTED_ARCHIVE_DEPTH {
         return metadata;
     }
@@ -230,6 +256,50 @@ fn inspect_zip<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str, depth: u
     metadata
 }
 
+const CLIENT_ONLY_MARKERS: [&[u8]; 4] = [
+    b"client-side-only",
+    b"client side only",
+    b"client-only mod",
+    b"should not be installed server-side",
+];
+
+/// Look for an explicit author-provided client-only marker in top-level class
+/// files.  Merely referencing `net/minecraft/client` is not enough: healthy
+/// server mods commonly bundle client classes behind a dist guard.  The
+/// marker is intentionally conservative and only blocks when the mod itself
+/// says it must not be installed on a server.
+fn archive_contains_client_only_marker<R: Read + Seek>(archive: &mut ZipArchive<R>) -> bool {
+    let class_names = archive
+        .file_names()
+        .filter(|name| name.to_ascii_lowercase().ends_with(".class"))
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    for class_name in class_names {
+        let Ok(mut entry) = archive.by_name(&class_name) else {
+            continue;
+        };
+        if entry.size() > 8 * 1024 * 1024 {
+            continue;
+        }
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        if entry.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        let lowered = bytes
+            .iter()
+            .map(|value| value.to_ascii_lowercase())
+            .collect::<Vec<_>>();
+        if CLIENT_ONLY_MARKERS.iter().any(|marker| {
+            lowered
+                .windows(marker.len())
+                .any(|window| window == *marker)
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
 fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str) -> Metadata {
     if !matches!(kind, "mod" | "plugin" | "datapack") {
         return Metadata::default();
@@ -262,6 +332,7 @@ fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str)
                     .get("environment")
                     .and_then(|value| value.as_str())
                     .is_some_and(|value| value == "client"),
+                client_only_marker: false,
             };
         }
     }
@@ -302,6 +373,7 @@ fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str)
                 loader: Some("paper".into()),
                 dependencies,
                 client_required: false,
+                client_only_marker: false,
             };
         }
     }
@@ -425,6 +497,7 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
         loader: Some(loader.into()),
         dependencies: unique_ids(dependencies),
         client_required: false,
+        client_only_marker: false,
     }
 }
 
@@ -542,6 +615,7 @@ mod tests {
     use std::io::{Cursor, Write};
 
     use super::*;
+    use crate::models::{BasicSettings, ServerProfile};
     use zip::{ZipWriter, write::SimpleFileOptions};
 
     fn zip_with_entries(entries: &[(&str, &[u8])]) -> Vec<u8> {
@@ -643,5 +717,60 @@ side = "BOTH"
                 .any(|value| value == "puzzlesaccessapi")
         );
         assert_eq!(metadata.dependencies, vec!["puzzlesaccessapi"]);
+    }
+
+    #[test]
+    fn explicit_client_only_marker_blocks_forge_server_mod() {
+        let root = std::env::temp_dir().join(format!(
+            "msh-extension-client-only-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mods = root.join("mods");
+        std::fs::create_dir_all(&mods).unwrap();
+        let archive = zip_with_entries(&[
+            (
+                "META-INF/mods.toml",
+                br#"
+[[mods]]
+modId = "rpghud"
+"#,
+            ),
+            (
+                "example/ModRPGHud.class",
+                b"client-side-only mod and should not be installed server-side",
+            ),
+        ]);
+        std::fs::write(mods.join("RPG-HUD-3.13.jar"), archive).unwrap();
+        let profile = ServerProfile {
+            id: "server".into(),
+            name: "Server".into(),
+            root_path: root.display().to_string(),
+            game_kind: "minecraft".into(),
+            server_type: "forge".into(),
+            minecraft_version: "1.20.1".into(),
+            distribution_build: Some("1.20.1-47.4.10".into()),
+            launch_target: "run.bat".into(),
+            java_path: "java.exe".into(),
+            java_major: 17,
+            min_memory_mib: 1024,
+            max_memory_mib: 4096,
+            port: 25565,
+            eula_accepted_at: "test".into(),
+            pending_restart: false,
+            settings: BasicSettings::default(),
+            palworld_settings: None,
+            created_at: "test".into(),
+            updated_at: "test".into(),
+        };
+        let report = check(&profile).unwrap();
+        let finding = report
+            .items
+            .iter()
+            .find(|item| item.code == "client-only-mod")
+            .expect("explicit client-only marker should be reported");
+        assert!(report.blocking);
+        assert_eq!(finding.files, vec!["RPG-HUD-3.13.jar"]);
+        assert!(finding.detail.contains("クライアント専用"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

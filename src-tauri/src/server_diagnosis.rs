@@ -326,6 +326,7 @@ fn incomplete_world_issue(profile: &ServerProfile) -> Option<DiagnosisIssue> {
 
 fn classify_logs(logs: &[String]) -> Vec<DiagnosisIssue> {
     let joined = logs.join("\n");
+    let mut issues = client_only_mod_issue(logs);
     let patterns = [
         (
             "unsupported-class",
@@ -400,9 +401,8 @@ fn classify_logs(logs: &[String]) -> Vec<DiagnosisIssue> {
             true,
         ),
     ];
-    patterns
-        .into_iter()
-        .filter_map(|(id, needle, what, impact, cause, action, restore)| {
+    issues.extend(patterns.into_iter().filter_map(
+        |(id, needle, what, impact, cause, action, restore)| {
             if !joined.contains(needle) {
                 return None;
             }
@@ -422,8 +422,69 @@ fn classify_logs(logs: &[String]) -> Vec<DiagnosisIssue> {
                 related,
                 restore,
             ))
-        })
-        .collect()
+        },
+    ));
+    issues
+}
+
+/// Forge can load a mod's common entrypoint before it has a chance to route
+/// client-only setup through a dist guard.  On a dedicated server this is
+/// reported as `invalid dist DEDICATED_SERVER`, followed by the mod id whose
+/// constructor failed.  Keep this separate from the generic class-loading
+/// rules so the user gets an actionable "move this mod to the client" message.
+fn client_only_mod_issue(logs: &[String]) -> Vec<DiagnosisIssue> {
+    static MOD_ID: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)Failed to create mod instance\.\s*ModID:\s*([A-Za-z0-9_.-]+)").unwrap()
+    });
+    static INVALID_DIST: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(
+            r"(?i)Attempted to load class\s+([A-Za-z0-9_.$/]+)\s+for invalid dist\s+DEDICATED_SERVER",
+        )
+        .unwrap()
+    });
+
+    let Some(dist_line) = logs
+        .iter()
+        .find(|line| INVALID_DIST.is_match(line.as_str()))
+    else {
+        return Vec::new();
+    };
+    let mod_id = logs.iter().find_map(|line| {
+        MOD_ID
+            .captures(line)
+            .and_then(|capture| capture.get(1).map(|value| value.as_str().to_string()))
+    });
+    let class_name = INVALID_DIST
+        .captures(dist_line)
+        .and_then(|capture| capture.get(1).map(|value| value.as_str().to_string()))
+        .unwrap_or_else(|| "net/minecraft/client/*".into());
+    let subject = mod_id
+        .as_deref()
+        .map(|value| format!("Mod「{value}」"))
+        .unwrap_or_else(|| "クライアント専用Mod".into());
+    let mut related = Vec::new();
+    for line in logs
+        .iter()
+        .filter(|line| INVALID_DIST.is_match(line.as_str()) || MOD_ID.is_match(line.as_str()))
+    {
+        let redacted = redact(line);
+        if !related.iter().any(|value| value == &redacted) {
+            related.push(redacted);
+        }
+    }
+    vec![issue(
+        "client-only-mod",
+        "error",
+        &format!("専用サーバーでクライアント専用Modを読み込もうとしました: {subject}"),
+        "Forgeがクライアント用クラスを専用サーバーから除外して安全に終了しました。",
+        &format!("{subject}の読み込み中にクライアント専用クラス {class_name} が要求されました。"),
+        &[
+            "このModをサーバーのmodsフォルダーから外し、必要なら参加者側のクライアントにだけ導入してください。",
+            "同じModパックを使う場合は、専用サーバー対応版またはサーバー不要版の有無を配布元で確認してください。",
+        ],
+        related,
+        false,
+    )]
 }
 
 fn fabric_dependency_issues(root: &Path) -> Vec<DiagnosisIssue> {
@@ -652,6 +713,37 @@ mod tests {
         assert!(issues.iter().any(|issue| issue.id == "oom"));
         assert!(issues.iter().any(|issue| issue.id == "bind"));
         assert!(issues.iter().any(|issue| issue.id == "mod-dependency-log"));
+    }
+
+    #[test]
+    fn classifies_forge_client_only_mod_failure_with_mod_id() {
+        let logs = vec![
+            "[modloading-worker-0/ERROR] [ne.mi.fm.lo.RuntimeDistCleaner/DISTXFORM]: Attempted to load class net/minecraft/client/gui/screens/Screen for invalid dist DEDICATED_SERVER".into(),
+            "[modloading-worker-0/ERROR] [ne.mi.fm.ja.FMLModContainer/LOADING]: Failed to create mod instance. ModID: rpghud, class net.spellcraftgaming.rpghud.main.ModRPGHud".into(),
+        ];
+        let issues = classify_logs(&logs);
+        let issue = issues
+            .iter()
+            .find(|value| value.id == "client-only-mod")
+            .expect("client-only Forge mod should be identified");
+        assert!(issue.what_happened.contains("rpghud"));
+        assert!(
+            issue
+                .likely_cause
+                .contains("net/minecraft/client/gui/screens/Screen")
+        );
+        assert!(
+            issue
+                .next_actions
+                .iter()
+                .any(|action| action.contains("modsフォルダーから外し"))
+        );
+        assert!(
+            issue
+                .related_logs
+                .iter()
+                .any(|line| line.contains("rpghud"))
+        );
     }
 
     #[test]

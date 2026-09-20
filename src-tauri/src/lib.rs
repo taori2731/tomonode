@@ -1028,19 +1028,7 @@ fn start_server(
     drop(store);
     if !profile.game_adapter().is_palworld() {
         enforce_start_preflight(&profile)?;
-        let extension_report = extension_check::check(&profile)?;
-        if extension_report.blocking {
-            let titles = extension_report
-                .items
-                .iter()
-                .filter(|item| item.severity == "error")
-                .map(|item| item.title.as_str())
-                .collect::<Vec<_>>();
-            return Err(AppError::Validation(format!(
-                "起動前のMod／プラグイン検査で修正が必要です: {}。自動運用タブで詳細を確認してください",
-                titles.join(" / ")
-            )));
-        }
+        enforce_extension_preflight(&profile)?;
     }
     process::start(
         &app,
@@ -1274,6 +1262,7 @@ async fn restart_server(
     drop(store);
     if !profile.game_adapter().is_palworld() {
         enforce_start_preflight(&profile)?;
+        enforce_extension_preflight(&profile)?;
     } else {
         let _ = credentials::load_palworld_admin_password(&profile.id)?;
         palworld::validate_server_layout(Path::new(&profile.root_path))?;
@@ -1321,6 +1310,23 @@ fn enforce_start_preflight(profile: &ServerProfile) -> AppResult<()> {
             blocking.join(" / ")
         )))
     }
+}
+
+fn enforce_extension_preflight(profile: &ServerProfile) -> AppResult<()> {
+    let extension_report = extension_check::check(profile)?;
+    if !extension_report.blocking {
+        return Ok(());
+    }
+    let titles = extension_report
+        .items
+        .iter()
+        .filter(|item| item.severity == "error")
+        .map(|item| item.title.as_str())
+        .collect::<Vec<_>>();
+    Err(AppError::Validation(format!(
+        "起動前のMod／プラグイン検査で修正が必要です: {}。自動運用タブで詳細を確認してください",
+        titles.join(" / ")
+    )))
 }
 
 #[tauri::command]
