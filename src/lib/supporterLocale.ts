@@ -14,6 +14,11 @@ export type SupporterCopy = {
   candidateFeatures: readonly string[];
   pendingTitle: string;
   pendingBody: string;
+  availableTitle: string;
+  availableBody: string;
+  supportButton: string;
+  setupGuideLink: string;
+  setupGuideBody: string;
   afterStoppingBody: string;
 };
 
@@ -38,7 +43,12 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "限定デザインやアイコンなどの外観",
     ],
     pendingTitle: "支援受付は準備中",
-    pendingBody: "支援はまだ受け付けていません。寄付先や受付方法などは確定しておらず、この画面から操作できません。",
+    pendingBody: "GitHub Sponsorsの受取設定完了後に利用可能です。現在は受取設定が完了していないため、一般向けの支援受付はまだ始まっていません。このアプリで決済情報を入力・保存することはありません。",
+    availableTitle: "GitHub Sponsorsで支援できます",
+    availableBody: "GitHub Sponsorsのページで、1回限りまたは月額の支援を選べます。決済はGitHub側で行われます。",
+    supportButton: "GitHub Sponsorsで支援",
+    setupGuideLink: "受取設定の手順（開発者向け）",
+    setupGuideBody: "GitHub Sponsorsの受取設定が完了したら、この同じURLを有効化します。",
     afterStoppingBody: "支援を停止した後も、安全機能、バックアップと復元、サーバーデータへのアクセスを制限しません。",
   },
   en: {
@@ -60,8 +70,13 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Participation in feedback for features in development",
       "Limited designs, icons, and other appearance options",
     ],
-    pendingTitle: "Support sign-up is being prepared",
-    pendingBody: "Support is not available yet. A recipient and support method have not been decided, so this screen has no action to start support.",
+    pendingTitle: "GitHub Sponsors support is being prepared",
+    pendingBody: "Available after GitHub Sponsors recipient setup is complete. The setup is not complete yet, so support is not currently being accepted. This app does not collect or store payment details.",
+    availableTitle: "Support via GitHub Sponsors",
+    availableBody: "Choose a one-time or monthly contribution on GitHub Sponsors. Payment is handled by GitHub.",
+    supportButton: "Support on GitHub Sponsors",
+    setupGuideLink: "Recipient setup guide (for maintainers)",
+    setupGuideBody: "After GitHub Sponsors recipient setup is complete, enable this same link.",
     afterStoppingBody: "Stopping support will not restrict safety tools, backup and restore, or access to server data.",
   },
   de: {
@@ -83,8 +98,13 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Feedback zu Funktionen in Entwicklung",
       "Exklusive Designs, Symbole und andere Darstellungsoptionen",
     ],
-    pendingTitle: "Unterstützungsangebot wird vorbereitet",
-    pendingBody: "Unterstützung ist noch nicht möglich. Empfänger und Unterstützungsweg stehen noch nicht fest; auf diesem Bildschirm gibt es keine Aktion zum Starten.",
+    pendingTitle: "GitHub-Sponsors-Unterstützung wird vorbereitet",
+    pendingBody: "Nach Abschluss der Empfängereinrichtung bei GitHub Sponsors verfügbar. Die Einrichtung ist noch nicht abgeschlossen, daher werden derzeit keine Unterstützungen angenommen. Diese App erfasst oder speichert keine Zahlungsdaten.",
+    availableTitle: "Über GitHub Sponsors unterstützen",
+    availableBody: "Auf GitHub Sponsors können Sie eine einmalige oder monatliche Unterstützung auswählen. Die Zahlung wird von GitHub abgewickelt.",
+    supportButton: "Über GitHub Sponsors unterstützen",
+    setupGuideLink: "Anleitung zur Empfängereinrichtung (für Maintainer)",
+    setupGuideBody: "Nach Abschluss der GitHub-Sponsors-Empfängereinrichtung wird derselbe Link aktiviert.",
     afterStoppingBody: "Das Beenden der Unterstützung schränkt Sicherheitsfunktionen, Sicherung und Wiederherstellung oder den Zugriff auf Serverdaten nicht ein.",
   },
   es: {
@@ -106,8 +126,13 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Participación en los comentarios sobre funciones en desarrollo",
       "Diseños, iconos y otras opciones visuales limitadas",
     ],
-    pendingTitle: "La recepción de apoyos está en preparación",
-    pendingBody: "Todavía no se aceptan apoyos. El destinatario y el método de apoyo aún no están decididos, por lo que esta pantalla no ofrece ninguna acción para iniciar el apoyo.",
+    pendingTitle: "La recepción de apoyos mediante GitHub Sponsors está en preparación",
+    pendingBody: "Estará disponible cuando se complete la configuración del destinatario en GitHub Sponsors. La configuración aún no ha terminado, por lo que todavía no se aceptan apoyos. Esta aplicación no recopila ni guarda datos de pago.",
+    availableTitle: "Apoyar mediante GitHub Sponsors",
+    availableBody: "En GitHub Sponsors puedes elegir una contribución única o mensual. GitHub gestiona el pago.",
+    supportButton: "Apoyar en GitHub Sponsors",
+    setupGuideLink: "Guía de configuración del destinatario (para mantenedores)",
+    setupGuideBody: "Cuando se complete la configuración del destinatario en GitHub Sponsors, se activará este mismo enlace.",
     afterStoppingBody: "Dejar de apoyar no limitará las herramientas de seguridad, las copias y restauraciones ni el acceso a los datos del servidor.",
   },
   fr: {
@@ -129,8 +154,13 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Participation aux retours sur les fonctions en développement",
       "Designs, icônes et autres options d’apparence limitées",
     ],
-    pendingTitle: "La réception des soutiens est en préparation",
-    pendingBody: "Le soutien n’est pas encore disponible. Le destinataire et le mode de soutien ne sont pas définis ; cet écran ne propose donc aucune action pour commencer.",
+    pendingTitle: "La réception des soutiens via GitHub Sponsors est en préparation",
+    pendingBody: "Elle sera disponible une fois la configuration du bénéficiaire GitHub Sponsors terminée. La configuration n’est pas terminée ; aucun soutien n’est donc accepté pour le moment. Cette application ne recueille ni ne stocke de données de paiement.",
+    availableTitle: "Soutenir via GitHub Sponsors",
+    availableBody: "Sur GitHub Sponsors, choisissez un soutien ponctuel ou mensuel. Le paiement est traité par GitHub.",
+    supportButton: "Soutenir sur GitHub Sponsors",
+    setupGuideLink: "Guide de configuration du bénéficiaire (pour mainteneurs)",
+    setupGuideBody: "Une fois la configuration du bénéficiaire GitHub Sponsors terminée, ce même lien sera activé.",
     afterStoppingBody: "L’arrêt du soutien ne limitera ni les outils de sécurité, ni la sauvegarde et la restauration, ni l’accès aux données du serveur.",
   },
   ko: {
@@ -152,8 +182,13 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "개발 중인 기능에 대한 피드백 참여",
       "한정 디자인, 아이콘 및 기타 외관 옵션",
     ],
-    pendingTitle: "응원 접수를 준비 중입니다",
-    pendingBody: "아직 응원을 받고 있지 않습니다. 수신처와 응원 방법이 정해지지 않았으므로 이 화면에서 응원을 시작하는 작업은 제공하지 않습니다.",
+    pendingTitle: "GitHub Sponsors 응원 접수를 준비 중입니다",
+    pendingBody: "GitHub Sponsors 수신자 설정이 완료되면 이용할 수 있습니다. 아직 설정이 완료되지 않아 현재는 응원을 받고 있지 않습니다. 이 앱은 결제 정보를 수집하거나 저장하지 않습니다.",
+    availableTitle: "GitHub Sponsors로 응원하기",
+    availableBody: "GitHub Sponsors에서 일회성 또는 월간 응원을 선택할 수 있습니다. 결제는 GitHub에서 처리합니다.",
+    supportButton: "GitHub Sponsors에서 응원하기",
+    setupGuideLink: "수신자 설정 안내 (관리자용)",
+    setupGuideBody: "GitHub Sponsors 수신자 설정이 완료되면 이 동일한 링크를 활성화합니다.",
     afterStoppingBody: "응원을 중단해도 안전 기능, 백업과 복원 또는 서버 데이터 접근을 제한하지 않습니다.",
   },
   "pt-BR": {
@@ -175,8 +210,13 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Participação em feedback sobre recursos em desenvolvimento",
       "Designs, ícones e outras opções visuais limitadas",
     ],
-    pendingTitle: "O recebimento de apoio está sendo preparado",
-    pendingBody: "O apoio ainda não está disponível. O destinatário e o método de apoio não foram definidos, então esta tela não oferece uma ação para iniciar o apoio.",
+    pendingTitle: "O recebimento de apoio pelo GitHub Sponsors está sendo preparado",
+    pendingBody: "Estará disponível após a conclusão da configuração do destinatário no GitHub Sponsors. A configuração ainda não foi concluída, portanto o apoio ainda não está sendo aceito. Este aplicativo não coleta nem armazena dados de pagamento.",
+    availableTitle: "Apoie pelo GitHub Sponsors",
+    availableBody: "No GitHub Sponsors, escolha uma contribuição única ou mensal. O pagamento é processado pelo GitHub.",
+    supportButton: "Apoiar no GitHub Sponsors",
+    setupGuideLink: "Guia de configuração do destinatário (para mantenedores)",
+    setupGuideBody: "Após concluir a configuração do destinatário no GitHub Sponsors, este mesmo link será ativado.",
     afterStoppingBody: "Interromper o apoio não limitará as ferramentas de segurança, o backup e a restauração ou o acesso aos dados do servidor.",
   },
   "zh-CN": {
@@ -198,8 +238,13 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "参与开发中功能的反馈",
       "限定设计、图标和其他外观选项",
     ],
-    pendingTitle: "支持受理正在准备中",
-    pendingBody: "目前还未开始接受支持。接收方和支持方式尚未确定，因此此页面没有开始支持的操作。",
+    pendingTitle: "GitHub Sponsors 支持受理正在准备中",
+    pendingBody: "完成 GitHub Sponsors 接收方设置后即可使用。设置尚未完成，因此目前还未开始接受支持。本应用不会收集或保存支付信息。",
+    availableTitle: "通过 GitHub Sponsors 支持",
+    availableBody: "你可以在 GitHub Sponsors 中选择一次性或按月支持，付款由 GitHub 处理。",
+    supportButton: "在 GitHub Sponsors 上支持",
+    setupGuideLink: "接收方设置指南（维护者）",
+    setupGuideBody: "完成 GitHub Sponsors 接收方设置后，将启用同一个链接。",
     afterStoppingBody: "停止支持后，安全功能、备份与恢复以及服务器数据访问都不会受到限制。",
   },
   "zh-TW": {
@@ -221,8 +266,13 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "參與開發中功能的意見回饋",
       "限定設計、圖示與其他外觀選項",
     ],
-    pendingTitle: "支持受理正在準備中",
-    pendingBody: "目前尚未開始接受支持。接收方與支持方式尚未確定，因此此頁面沒有開始支持的操作。",
+    pendingTitle: "GitHub Sponsors 支持受理正在準備中",
+    pendingBody: "完成 GitHub Sponsors 接收方設定後即可使用。目前設定尚未完成，因此尚未開始接受支持。本應用程式不會收集或儲存付款資料。",
+    availableTitle: "透過 GitHub Sponsors 支持",
+    availableBody: "你可以在 GitHub Sponsors 選擇一次性或每月支持，付款由 GitHub 處理。",
+    supportButton: "在 GitHub Sponsors 上支持",
+    setupGuideLink: "接收方設定指南（維護者）",
+    setupGuideBody: "完成 GitHub Sponsors 接收方設定後，將啟用同一個連結。",
     afterStoppingBody: "停止支持後，安全功能、備份與還原以及伺服器資料存取都不會受到限制。",
   },
 };

@@ -510,6 +510,8 @@ const textSources = new WeakMap<Text, string>();
 const textRendered = new WeakMap<Text, string>();
 const attributeStates = new WeakMap<Element, Map<string, AttributeState>>();
 const patternCache = new Map<AppLocale, { source: TranslationCatalogPatterns; compiled: CompiledPattern[] }>();
+const generatedTextCache = new Map<AppLocale, Map<string, string>>();
+const GENERATED_TEXT_CACHE_LIMIT = 2_000;
 type TranslationCatalogPatterns = Readonly<Record<string, string>>;
 
 function escapeRegExp(value: string) {
@@ -571,15 +573,31 @@ function translateCore(source: string, locale: AppLocale) {
 }
 
 export function translateGeneratedText(source: string, locale: AppLocale) {
+  let localeCache = generatedTextCache.get(locale);
+  if (!localeCache) {
+    localeCache = new Map();
+    generatedTextCache.set(locale, localeCache);
+  }
+  const cached = localeCache.get(source);
+  if (cached !== undefined) return cached;
   const leading = source.match(/^\s*/)?.[0] ?? "";
   const trailing = source.match(/\s*$/)?.[0] ?? "";
   const core = source.slice(leading.length, source.length - trailing.length || undefined);
   if (!core) return source;
   const direct = translateCore(core, locale);
-  if (direct !== core) return `${leading}${direct}${trailing}`;
-  const normalized = core.replace(/[ \t\r\f\v]+/g, " ");
-  const normalizedTranslation = translateCore(normalized, locale);
-  return normalizedTranslation === normalized ? source : `${leading}${normalizedTranslation}${trailing}`;
+  let result: string;
+  if (direct !== core) result = `${leading}${direct}${trailing}`;
+  else {
+    const normalized = core.replace(/[ \t\r\f\v]+/g, " ");
+    const normalizedTranslation = translateCore(normalized, locale);
+    result = normalizedTranslation === normalized ? source : `${leading}${normalizedTranslation}${trailing}`;
+  }
+  if (localeCache.size >= GENERATED_TEXT_CACHE_LIMIT) {
+    const oldest = localeCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) localeCache.delete(oldest);
+  }
+  localeCache.set(source, result);
+  return result;
 }
 
 function isExcluded(element: Element | null) {
@@ -636,13 +654,69 @@ export function installDocumentTranslation(locale: AppLocale) {
   const root = document.body;
   if (!root) return () => undefined;
   translateSubtree(root, locale);
+  document.documentElement.dataset.documentTranslationLocale = locale;
+  // Japanese is the source language. A one-time walk restores text that was
+  // previously translated, but no mutation observer is needed afterwards.
+  if (locale === "ja") return () => undefined;
+
+  const pendingRoots = new Set<Node>();
+  const pendingText = new Set<Text>();
+  const pendingAttributes = new Map<Element, Set<string>>();
+  let flushTimer: number | undefined;
+
+  const isCoveredByRoot = (node: Node) => {
+    for (const pendingRoot of pendingRoots) if (pendingRoot === node || pendingRoot.contains(node)) return true;
+    return false;
+  };
+  const addRoot = (node: Node) => {
+    if (isCoveredByRoot(node)) return;
+    for (const pendingRoot of [...pendingRoots]) if (node.contains(pendingRoot)) pendingRoots.delete(pendingRoot);
+    pendingRoots.add(node);
+  };
+  const flush = () => {
+    flushTimer = undefined;
+    const roots = [...pendingRoots];
+    const textNodes = [...pendingText];
+    const attributes = [...pendingAttributes];
+    pendingRoots.clear();
+    pendingText.clear();
+    pendingAttributes.clear();
+    roots.forEach((node) => translateSubtree(node, locale));
+    textNodes.forEach((node) => {
+      if (!roots.some((pendingRoot) => pendingRoot === node || pendingRoot.contains(node))) translateTextNode(node, locale);
+    });
+    attributes.forEach(([element, names]) => {
+      if (roots.some((pendingRoot) => pendingRoot === element || pendingRoot.contains(element))) return;
+      names.forEach((name) => translateAttribute(element, name, locale));
+    });
+  };
+  const scheduleFlush = () => {
+    if (flushTimer !== undefined) return;
+    // Yield once so React can paint the selected screen before translating its
+    // newly mounted subtree. This removes the long click-to-paint task on low-
+    // end CPUs while still applying translations immediately afterwards.
+    flushTimer = window.setTimeout(flush, 0);
+  };
   const observer = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
-      if (mutation.type === "characterData") translateTextNode(mutation.target as Text, locale);
-      else if (mutation.type === "attributes") translateAttribute(mutation.target as Element, mutation.attributeName ?? "", locale);
-      else mutation.addedNodes.forEach((node) => translateSubtree(node, locale));
+      if (mutation.type === "characterData") pendingText.add(mutation.target as Text);
+      else if (mutation.type === "attributes") {
+        const element = mutation.target as Element;
+        const attribute = mutation.attributeName;
+        if (!attribute) continue;
+        const names = pendingAttributes.get(element) ?? new Set<string>();
+        names.add(attribute);
+        pendingAttributes.set(element, names);
+      } else mutation.addedNodes.forEach(addRoot);
     }
+    scheduleFlush();
   });
   observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: [...TRANSLATED_ATTRIBUTES] });
-  return () => observer.disconnect();
+  return () => {
+    observer.disconnect();
+    if (flushTimer !== undefined) window.clearTimeout(flushTimer);
+    pendingRoots.clear();
+    pendingText.clear();
+    pendingAttributes.clear();
+  };
 }

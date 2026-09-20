@@ -962,6 +962,9 @@ a { color: var(--accent); }
 .plan-policy { padding: 15px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted); background: var(--bg-soft); }
 .plan-policy strong { color: var(--text); font-size: 13px; }
 .plan-policy p { margin: 7px 0 0; font-size: 12px; line-height: 1.7; }
+.plan-policy .support-action-button, .plan-policy .support-setup-link { margin-top: 12px; }
+.plan-policy .support-setup-link { text-decoration: none; }
+.plan-policy .support-guide-note { margin-top: 9px; }
 .privacy-list { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 20px; }
 .privacy-list article { padding: 18px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-soft); }
 .privacy-list p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.7; }

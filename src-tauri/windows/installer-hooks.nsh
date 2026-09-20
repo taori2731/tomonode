@@ -1,4 +1,5 @@
 !define TOMONODE_SHORTCUT_NAME "TomoNode"
+!define TOMONODE_DISPLAY_NAME "TomoNode"
 
 !macro TOMONODE_RENAME_OWNED_SHORTCUT OLD_PATH NEW_PATH
   !insertmacro IsShortcutTarget "${OLD_PATH}" "$INSTDIR\${MAINBINARYNAME}.exe"
@@ -29,6 +30,9 @@
 
 !macro NSIS_HOOK_POSTINSTALL
   SetShellVarContext current
+  ; Keep the legacy uninstall key so upgrades continue to target the existing
+  ; installation, but show the current product name in Windows Settings.
+  WriteRegStr SHCTX "${UNINSTKEY}" "DisplayName" "${TOMONODE_DISPLAY_NAME}"
   !if "${STARTMENUFOLDER}" != ""
     !insertmacro TOMONODE_RENAME_OWNED_SHORTCUT "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "$SMPROGRAMS\$AppStartMenuFolder\${TOMONODE_SHORTCUT_NAME}.lnk"
   !else

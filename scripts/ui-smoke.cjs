@@ -5,6 +5,7 @@ const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "..");
 const url = "http://127.0.0.1:1420/";
+const githubSponsorsSetupUrl = "https://docs.github.com/ja/sponsors/receiving-sponsorships-through-github-sponsors/setting-up-github-sponsors-for-your-personal-account";
 const chromeCandidates = [
   process.env.PLAYWRIGHT_CHROME_PATH,
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -113,8 +114,8 @@ let browser;
   await monitor.getByText(/^[123] ms$/).waitFor();
   const memoryMeter = page.getByRole("progressbar", { name: "使用メモリ" });
   const firstMemory = await memoryMeter.getAttribute("aria-valuenow");
-  await page.waitForTimeout(1_100);
-  if (await memoryMeter.getAttribute("aria-valuenow") === firstMemory) throw new Error("使用メモリが1秒間隔で更新されませんでした");
+  await page.waitForTimeout(2_600);
+  if (await memoryMeter.getAttribute("aria-valuenow") === firstMemory) throw new Error("使用メモリが軽量な2秒間隔で更新されませんでした");
 
   await page.getByRole("button", { name: "テーマ: system" }).click();
   if (await page.locator(".app").getAttribute("data-theme") !== "dark") throw new Error("ダークテーマへ切り替わりませんでした");
@@ -462,6 +463,7 @@ let browser;
     const tabCount = await serverTabs.count();
     for (let index = 0; index < tabCount; index += 1) {
       await serverTabs.nth(index).click();
+      await page.waitForFunction((tabIndex) => document.querySelectorAll(".tabs > button")[tabIndex]?.classList.contains("active"), index);
       await page.locator(".tab-content").waitFor();
       await page.waitForTimeout(30);
       leftovers = await findJapaneseUiLeftovers();
@@ -476,18 +478,22 @@ let browser;
     }
 
     await page.locator(".server-list").getByText("Palworld Friends", { exact: true }).click();
+    await page.getByRole("heading", { name: "Palworld Friends" }).waitFor();
     const palworldTabs = page.locator(".tabs > button");
     if (await palworldTabs.count() !== 6) throw new Error(`${locale}のPalworldタブ数が想定と異なります`);
     for (let index = 0; index < 6; index += 1) {
       await palworldTabs.nth(index).click();
+      await page.waitForFunction((tabIndex) => document.querySelectorAll(".tabs > button")[tabIndex]?.classList.contains("active"), index);
       await page.locator(".tab-content").waitFor();
       await page.waitForTimeout(30);
       leftovers = await findJapaneseUiLeftovers();
       if (leftovers.length) throw new Error(`${locale}のPalworldタブ${index + 1}に日本語の表示漏れがあります: ${leftovers.slice(0, 5).join(" / ")}`);
     }
     await palworldTabs.nth(1).click();
+    await page.waitForFunction(() => document.querySelectorAll(".tabs > button")[1]?.classList.contains("active"));
     if (await page.locator(".command-line").count()) throw new Error(`${locale}のPalworldログにコマンド入力が表示されています`);
     await page.locator(".server-list").getByText("Survival World", { exact: true }).click();
+    await page.getByRole("heading", { name: "Survival World" }).waitFor();
 
     await page.locator(".sidebar-footer button").first().click();
     await page.locator(".app-settings-dialog").waitFor();
@@ -521,6 +527,12 @@ let browser;
   await page.getByRole("button", { name: "エメラルド" }).click();
   await page.locator(".settings-dialog-layout nav").getByRole("button", { name: "TomoNodeを応援" }).click();
   await page.getByRole("heading", { name: "TomoNodeを応援" }).waitFor();
+  await page.getByText("GitHub Sponsorsの受取設定完了後に利用可能").waitFor();
+  const supportSetupLink = page.getByRole("link", { name: "受取設定の手順（開発者向け）" });
+  if (await supportSetupLink.getAttribute("href") !== githubSponsorsSetupUrl) throw new Error("アプリのGitHub Sponsors受取設定手順URLが一致しません");
+  if (await supportSetupLink.getAttribute("target") !== "_blank") throw new Error("アプリのGitHub Sponsors受取設定手順が新しいタブ指定ではありません");
+  if (await supportSetupLink.getAttribute("rel") !== "noopener noreferrer") throw new Error("アプリのGitHub Sponsors受取設定手順にnoopener noreferrerがありません");
+  if (await page.getByRole("button", { name: "GitHub Sponsorsで支援" }).count()) throw new Error("GitHub Sponsors未設定なのにアプリの支援受付ボタンが表示されています");
   await page.locator(".app-settings-dialog").getByRole("button", { name: "閉じる" }).click();
 
   await page.locator(".top-button.create").click();

@@ -13,13 +13,13 @@ import { I18nProvider, useI18n } from "./lib/i18n";
 import { customAccentStyle, readAppearance } from "./lib/appearance";
 import { readServerIcons, storeServerIcons, withServerIcon, type ServerIconMap } from "./lib/serverIcons";
 import { getDefaultPortForServerType, getServerMaxPlayers, getServerTabs, isPalworldServer } from "./lib/gameAdapter";
-import { palworldText } from "./lib/palworldLocale";
 import { dismissMigrationNotice, readAppUpdatePreferences, shouldShowMigrationNotice } from "./lib/appUpdate";
 import { appUpdateText } from "./lib/appUpdateLocale";
 import { workspaceText } from "./lib/workspaceLocale";
 import { homeText } from "./lib/homeLocale";
 import { brand, formatNotificationTitle } from "./lib/brand";
 import { rebrandText } from "./lib/rebrandLocale";
+import { BACKGROUND_STATUS_POLL_INTERVAL_MS, isServerWorkspaceVisible, selectedLogPollInterval, selectedStatusPollInterval } from "./lib/pollingPolicy";
 import { MigrationNoticeDialog } from "./components/MigrationNoticeDialog";
 import type { AppSection, AppearanceSettings, DeleteServerResult, LogEntry, MonitoringSettings, RuntimeStatus, ServerProfile, TabId, ThemeMode } from "./types";
 
@@ -41,9 +41,11 @@ const OperationsCenterTab = lazy(() => import("./components/OperationsCenterTab"
 const PalworldOverviewTab = lazy(() => import("./components/PalworldOverviewTab").then((module) => ({ default: module.PalworldOverviewTab })));
 const PalworldPlayersTab = lazy(() => import("./components/PalworldPlayersTab").then((module) => ({ default: module.PalworldPlayersTab })));
 const PalworldSettingsTab = lazy(() => import("./components/PalworldSettingsTab").then((module) => ({ default: module.PalworldSettingsTab })));
+const PalworldConsoleTab = lazy(() => import("./components/PalworldConsoleTab").then((module) => ({ default: module.PalworldConsoleTab })));
+const PalworldBusyOverlay = lazy(() => import("./components/PalworldBusyOverlay").then((module) => ({ default: module.PalworldBusyOverlay })));
 
 function preloadTabModule(tab: TabId, palworld: boolean) {
-  if (tab === "console") return import("./components/ConsoleTab");
+  if (tab === "console") return palworld ? import("./components/PalworldConsoleTab") : import("./components/ConsoleTab");
   if (tab === "overview" && palworld) return import("./components/PalworldOverviewTab");
   if (tab === "players") return palworld ? import("./components/PalworldPlayersTab") : import("./components/FilesPlayersTab");
   if (tab === "files") return import("./components/FilesPlayersTab");
@@ -117,8 +119,8 @@ function useTheme() {
 export function AppContent() {
   const theme = useTheme();
   const { locale, t } = useI18n();
-  const workspaceCopy = workspaceText(locale);
-  const homeCopy = homeText(locale);
+  const workspaceCopy = useMemo(() => workspaceText(locale), [locale]);
+  const homeCopy = useMemo(() => homeText(locale), [locale]);
   const tabs = useMemo<{ id: TabId; label: string; icon: Parameters<typeof Icon>[0]["name"] }[]>(() => [
     { id: "overview", label: t("overview"), icon: "chart" },
     { id: "console", label: t("console"), icon: "console" },
@@ -166,6 +168,7 @@ export function AppContent() {
   const selectedStatus = selected ? statuses[selected.id] ?? stoppedStatus(selected) : stoppedStatus();
   const selectedIsPalworld = Boolean(selected && isPalworldServer(selected));
   const visibleTabs = useMemo(() => selected ? tabs.filter((tab) => getServerTabs(selected).includes(tab.id)) : tabs, [selected, tabs]);
+  const availableTabs = useMemo(() => visibleTabs.map((tab) => tab.id), [visibleTabs]);
   const updateServer = useCallback((updated: ServerProfile) => setServers((current) => current.map((item) => item.id === updated.id ? updated : item)), []);
   const updateServerIcon = useCallback((serverId: string, dataUrl?: string) => {
     const next = withServerIcon(serverIcons, serverId, dataUrl);
@@ -208,12 +211,12 @@ export function AppContent() {
       if (active) startTransition(() => setStatuses((current) => sameStatus(current[selectedId], next) ? current : { ...current, [selectedId]: next }));
     });
     refresh().catch(() => undefined);
-    const interval = ["running", "starting"].includes(selectedStatus.state) ? 1_000 : 3_000;
+    const interval = selectedStatusPollInterval(selectedStatus.state, activeSection);
     const timer = window.setInterval(() => refresh().catch(() => undefined), interval);
     const onVisibilityChange = () => { if (!document.hidden) refresh().catch(() => undefined); };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => { active = false; window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); };
-  }, [selectedId, selectedStatus.state]);
+  }, [activeSection, selectedId, selectedStatus.state]);
 
   useEffect(() => {
     const background = servers.filter((server) => server.id !== selectedId);
@@ -229,7 +232,7 @@ export function AppContent() {
       }));
     });
     refresh().catch(() => undefined);
-    const timer = window.setInterval(() => refresh().catch(() => undefined), 10_000);
+    const timer = window.setInterval(() => refresh().catch(() => undefined), BACKGROUND_STATUS_POLL_INTERVAL_MS);
     const onVisibilityChange = () => { if (!document.hidden) refresh().catch(() => undefined); };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => { active = false; window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); };
@@ -237,6 +240,8 @@ export function AppContent() {
 
   useEffect(() => {
     if (!selectedId) { setLogs([]); return; }
+    const interval = selectedLogPollInterval(selectedStatus.state, activeSection, activeTab);
+    if (!isServerWorkspaceVisible(activeSection)) return;
     let active = true;
     const refresh = createRefreshGuard(async () => {
       if (!active || document.hidden) return;
@@ -244,12 +249,11 @@ export function AppContent() {
       if (active) startTransition(() => setLogs((current) => sameLogs(current, entries) ? current : entries));
     });
     refresh().catch(() => undefined);
-    const shouldPoll = selectedStatus.state === "running" && (activeTab === "overview" || activeTab === "console");
-    const timer = shouldPoll ? window.setInterval(refresh, 2_000) : undefined;
+    const timer = interval ? window.setInterval(refresh, interval) : undefined;
     const onVisibilityChange = () => { if (!document.hidden) refresh().catch(() => undefined); };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => { active = false; window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); };
-  }, [selectedId, selectedStatus.state, activeTab]);
+  }, [activeSection, selectedId, selectedStatus.state, activeTab]);
 
   useEffect(() => {
     if (!toast) return;
@@ -360,25 +364,40 @@ export function AppContent() {
   };
 
   const openServer = useCallback((serverId: string, tab: TabId = "overview") => {
-    setSelectedId(serverId);
-    setActiveTab(tab);
-    setActiveSection(tab === "players" ? "players" : "home");
+    startTransition(() => {
+      setSelectedId(serverId);
+      setActiveTab(tab);
+      setActiveSection(tab === "players" ? "players" : "home");
+    });
   }, []);
 
   const navigateSection = useCallback((section: AppSection) => {
-    setActiveSection(section);
-    if (section === "players") setActiveTab("players");
-    else if (section === "home") setActiveTab("overview");
+    startTransition(() => {
+      setActiveSection(section);
+      if (section === "players") setActiveTab("players");
+      else if (section === "home") setActiveTab("overview");
+    });
+  }, []);
+
+  const navigateTab = useCallback((tab: TabId) => {
+    startTransition(() => {
+      setActiveTab(tab);
+      setActiveSection(tab === "players" ? "players" : "home");
+    });
   }, []);
 
   const createFromTemplate = useCallback((templateId: string) => {
     setInitialTemplateId(templateId);
     setShowWizard(true);
   }, []);
+  const openCreate = useCallback(() => { setInitialTemplateId(undefined); setShowWizard(true); }, []);
+  const openImport = useCallback(() => setShowImport(true), []);
+  const openAppSettings = useCallback(() => setShowAppSettings(true), []);
+  const openExtensions = useCallback(() => selected ? openServer(selected.id, "extensions") : setToast(t("selectServerFirst")), [openServer, selected, t]);
 
   const serverNavigation = (
     <nav className="tabs" aria-label={t("serverDetails")}>
-      {visibleTabs.map((tab) => <button key={tab.id} type="button" className={activeTab === tab.id ? "active" : ""} onMouseEnter={() => void preloadTabModule(tab.id, selectedIsPalworld)} onFocus={() => void preloadTabModule(tab.id, selectedIsPalworld)} onClick={() => { setActiveTab(tab.id); setActiveSection(tab.id === "players" ? "players" : "home"); }}><Icon name={tab.icon} />{tab.label}</button>)}
+      {visibleTabs.map((tab) => <button key={tab.id} type="button" className={activeTab === tab.id ? "active" : ""} onMouseEnter={() => void preloadTabModule(tab.id, selectedIsPalworld)} onFocus={() => void preloadTabModule(tab.id, selectedIsPalworld)} onClick={() => navigateTab(tab.id)}><Icon name={tab.icon} />{tab.label}</button>)}
     </nav>
   );
 
@@ -389,18 +408,18 @@ export function AppContent() {
         <div className="brand-mark" aria-hidden="true"><span /><span /><span /></div>
         <strong>{brand.productName}</strong>
         <span className="unofficial-label">{t("unofficial")}</span>
-        <GlobalSearch servers={servers} onOpenServer={openServer} onSection={navigateSection} onSettings={() => setShowAppSettings(true)} />
+        <GlobalSearch servers={servers} onOpenServer={openServer} onSection={navigateSection} onSettings={openAppSettings} />
         <div className="titlebar-actions">
           {selected?.serverType === "paper" ? <button className="top-button ghost crossplay-invite-button" type="button" onClick={() => setShowCrossplayInvite(true)}><Icon name="users" />{t("inviteBedrock")}</button> : null}
           <button className="top-button ghost" type="button" onClick={() => selected ? setShowInvite(true) : setToast(t("selectServerFirst"))}><Icon name="invite" />{t("inviteFriends")}</button>
           <button className="icon-button theme-button" type="button" onClick={theme.cycle} aria-label={`${t("theme")}: ${theme.mode}`} title={`${t("theme")}: ${theme.mode}`}><Icon name={theme.resolved === "dark" ? "moon" : "sun"} /></button>
-          <button className="top-button ghost import-button" type="button" onClick={() => setShowImport(true)}><Icon name="download" />{t("importServer")}</button>
-          <button className="top-button create" type="button" onClick={() => setShowWizard(true)}><Icon name="add" />{t("newServer")}</button>
+          <button className="top-button ghost import-button" type="button" onClick={openImport}><Icon name="download" />{t("importServer")}</button>
+          <button className="top-button create" type="button" onClick={openCreate}><Icon name="add" />{t("newServer")}</button>
         </div>
       </header>
 
       <div className="app-body">
-        <Sidebar servers={servers} serverIcons={serverIcons} selectedId={selectedId} statuses={statuses} activeTab={activeTab} activeSection={activeSection} availableTabs={selected ? getServerTabs(selected) : []} onNavigate={(tab) => { setActiveTab(tab); setActiveSection(tab === "players" ? "players" : "home"); }} onSectionNavigate={navigateSection} onSelect={openServer} onCreate={() => { setInitialTemplateId(undefined); setShowWizard(true); }} onImport={() => setShowImport(true)} onDelete={setDeleteTarget} onAppSettings={() => setShowAppSettings(true)} />
+        <Sidebar servers={servers} serverIcons={serverIcons} selectedId={selectedId} statuses={statuses} activeSection={activeSection} availableTabs={availableTabs} onSectionNavigate={navigateSection} onSelect={openServer} onCreate={openCreate} onImport={openImport} onDelete={setDeleteTarget} onAppSettings={openAppSettings} />
         <nav className="mobile-navigation" aria-label={workspaceCopy.servers}>
           <label><Icon name="server" size={17}/><select aria-label={t("serverList")} value={selectedId ?? ""} onChange={(event) => event.target.value && openServer(event.target.value)}><option value="" disabled>{t("serverList")}</option>{servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select></label>
           <div>
@@ -415,9 +434,9 @@ export function AppContent() {
         <main ref={workspaceRef} className="workspace" data-active-tab={activeTab}>
           {loading ? <div className="center-state" role="status" aria-label={`${brand.productName}: ${t("loadingServers")}`}><span className="spinner" /><strong>{t("loadingServers")}</strong></div> : null}
           {!loading && !selected && activeSection === "home" ? <div className="center-state empty" role="region" aria-label={`${brand.productName}: ${t("firstServerTitle")}`}><img src="/assets/voxel-server-island.png" alt="" /><h1>{t("firstServerTitle")}</h1><p>{t("firstServerBody")}</p><button className="primary-button" type="button" onClick={() => { setInitialTemplateId(undefined); setShowWizard(true); }}><Icon name="add" />{t("newServer")}</button></div> : null}
-          {!loading && activeSection === "servers" ? <ServerDirectoryPage servers={servers} statuses={statuses} serverIcons={serverIcons} onOpen={openServer} onCreate={() => { setInitialTemplateId(undefined); setShowWizard(true); }} /> : null}
+          {!loading && activeSection === "servers" ? <ServerDirectoryPage servers={servers} statuses={statuses} serverIcons={serverIcons} onOpen={openServer} onCreate={openCreate} /> : null}
           {!loading && activeSection === "templates" ? <TemplatesPage onUse={createFromTemplate} /> : null}
-          {!loading && activeSection === "discover" ? <DiscoverPage onCreate={() => { setInitialTemplateId(undefined); setShowWizard(true); }} onExtensions={() => selected ? openServer(selected.id, "extensions") : setToast(t("selectServerFirst"))} /> : null}
+          {!loading && activeSection === "discover" ? <DiscoverPage onCreate={openCreate} onExtensions={openExtensions} /> : null}
           {!loading && activeSection === "news" ? <NewsPage /> : null}
           {selected && (activeSection === "home" || activeSection === "players") ? (
             activeTab === "overview" ? (
@@ -427,8 +446,8 @@ export function AppContent() {
                 statuses={statuses}
                 serverIcons={serverIcons}
                 onSelect={openServer}
-                onCreate={() => { setInitialTemplateId(undefined); setShowWizard(true); }}
-                onNavigate={setActiveTab}
+                onCreate={openCreate}
+                onNavigate={navigateTab}
                 onCopyAddress={() => copy(selectedStatus.address)}
                 below={
                   <div className="home-overview-below">
@@ -436,7 +455,7 @@ export function AppContent() {
                     <Suspense fallback={<div className="center-state tab-loading" role="status" aria-label={`${brand.productName}: ${t("loadingServers")}`}><span className="spinner" /><strong>{t("loadingServers")}</strong></div>}>
                       {selectedIsPalworld
                         ? <PalworldOverviewTab server={selected} status={selectedStatus} onCopyAddress={() => copy(selectedStatus.address)} notify={setToast} fail={setError} />
-                        : <OverviewTab server={selected} status={selectedStatus} logs={logs} onCopyAddress={() => copy(selectedStatus.address, "サーバーアドレスをコピーしました")} onOpenFolder={() => backend.openFolder(selected.id)} onUpdated={updateServer} notify={setToast} fail={setError} onNavigate={setActiveTab} onInvite={() => setShowInvite(true)} />}
+                        : <OverviewTab server={selected} status={selectedStatus} logs={logs} onCopyAddress={() => copy(selectedStatus.address, "サーバーアドレスをコピーしました")} onOpenFolder={() => backend.openFolder(selected.id)} onUpdated={updateServer} notify={setToast} fail={setError} onNavigate={navigateTab} onInvite={() => setShowInvite(true)} />}
                     </Suspense>
                   </div>
                 }
@@ -448,7 +467,9 @@ export function AppContent() {
                 <ServerHeader server={selected} serverIcon={serverIcons[selected.id]} status={selectedStatus} busyAction={busyAction} compact onStart={() => runAction("start")} onStop={() => runAction("stop")} onRestart={() => runAction("restart")} />
                 {serverNavigation}
                 <Suspense fallback={<div className="center-state tab-loading" role="status" aria-label={`${brand.productName}: ${t("loadingServers")}`}><span className="spinner" /><strong>{t("loadingServers")}</strong></div>}>
-                  {activeTab === "console" ? <ConsoleTab logs={logs} running={selectedStatus.state === "running"} onClear={() => { backend.clearLogs(selected.id); setLogs([]); }} onCopy={(value) => copy(value)} onSave={saveLogs} onCommand={sendCommand} commandsEnabled={!selectedIsPalworld} commandUnavailableMessage={selectedIsPalworld ? palworldText(locale, "readOnlyLogs") : undefined} /> : null}
+                  {activeTab === "console" ? selectedIsPalworld
+                    ? <PalworldConsoleTab logs={logs} running={selectedStatus.state === "running"} onClear={() => { backend.clearLogs(selected.id); setLogs([]); }} onCopy={(value) => copy(value)} onSave={saveLogs} />
+                    : <ConsoleTab logs={logs} running={selectedStatus.state === "running"} onClear={() => { backend.clearLogs(selected.id); setLogs([]); }} onCopy={(value) => copy(value)} onSave={saveLogs} onCommand={sendCommand} /> : null}
                   {activeTab === "players" ? selectedIsPalworld ? <PalworldPlayersTab server={selected} status={selectedStatus} /> : <PlayerAccessTab server={selected} status={selectedStatus} notify={setToast} fail={setError} /> : null}
                   {activeTab === "files" ? <ServerFilesTab server={selected} status={selectedStatus} /> : null}
                   {!selectedIsPalworld && activeTab === "extensions" ? <ExtensionsTab server={selected} status={selectedStatus} notify={setToast} fail={setError} /> : null}
@@ -481,11 +502,13 @@ export function AppContent() {
       </Suspense>
       {error ? <div className="global-error" role="alert"><Icon name="info" /><span>{error}</span><button type="button" onClick={() => setError("")} aria-label="エラーを閉じる"><Icon name="close" size={18} /></button></div> : null}
       {toast ? <div className="toast" role="status"><Icon name="check" size={18} />{toast}</div> : null}
-      {busyAction ? <OperationOverlay
-        title={selectedIsPalworld ? busyAction === "stop" ? palworldText(locale, "safeShutdownSaving") : palworldText(locale, "statusStarting") : busyAction === "start" ? "サーバーを起動しています" : busyAction === "stop" ? "サーバーを安全に停止しています" : "サーバーを再起動しています"}
-        detail={selectedIsPalworld ? palworldText(locale, busyAction === "stop" ? "safeShutdownDescription" : "phasePw1Description") : "プロセスとポートの状態を確認しています。ワールドの読み込みや保存には時間がかかる場合があります。"}
-        stages={selectedIsPalworld ? busyAction === "stop" ? [palworldText(locale, "safeShutdownSaving"), palworldText(locale, "safeShutdownRequesting"), palworldText(locale, "safeShutdownWaiting")] : [palworldText(locale, "statusInstallingSteamCmd"), palworldText(locale, "statusPreparing"), palworldText(locale, "statusStarting")] : busyAction === "stop" ? ["保存要求", "停止確認", "状態更新"] : ["起動要求", "待受確認", "状態更新"]}
-      /> : null}
+      {busyAction ? <Suspense fallback={null}>{selectedIsPalworld
+        ? <PalworldBusyOverlay action={busyAction} />
+        : <OperationOverlay
+          title={busyAction === "start" ? "サーバーを起動しています" : busyAction === "stop" ? "サーバーを安全に停止しています" : "サーバーを再起動しています"}
+          detail="プロセスとポートの状態を確認しています。ワールドの読み込みや保存には時間がかかる場合があります。"
+          stages={busyAction === "stop" ? ["保存要求", "停止確認", "状態更新"] : ["起動要求", "待受確認", "状態更新"]}
+        />}</Suspense> : null}
       {showMigrationNotice ? <MigrationNoticeDialog locale={locale} onClose={() => { dismissMigrationNotice(); setShowMigrationNotice(false); }} /> : null}
     </div>
   );

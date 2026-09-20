@@ -9,6 +9,8 @@ import { appUpdateText } from "../lib/appUpdateLocale";
 import { brand } from "../lib/brand";
 import { getRebrandCopy } from "../lib/rebrandLocale";
 import { supporterText } from "../lib/supporterLocale";
+import { openExternalUrl } from "./ExternalLinkHandler";
+import { GITHUB_SPONSORS_URL, isSupportExternalUrl, supportConfig } from "../lib/supporterConfig";
 
 type Section = "language" | "members" | "pro" | "plan" | "privacy" | "update" | "uninstall";
 
@@ -156,6 +158,15 @@ export function AppSettingsDialog({
     ? playerName.trim().length > 0 && playerName.trim().length <= 32 && !/[\r\n\t]/.test(playerName)
     : /^[A-Za-z0-9_]{3,16}$/.test(playerName.trim());
   const canApply = Boolean(server && status && ["running", "stopped"].includes(status.state));
+  const openSponsors = async () => {
+    if (!supportConfig.enabled) return;
+    if (supportConfig.sponsorUrl !== GITHUB_SPONSORS_URL || !isSupportExternalUrl(supportConfig.sponsorUrl)) {
+      fail("支援先URLの安全確認に失敗しました");
+      return;
+    }
+    try { await openExternalUrl(supportConfig.sponsorUrl); }
+    catch (reason) { fail(String(reason)); }
+  };
   const changeLanguage = (next: LanguagePreference) => {
     setPreference(next);
     notify(translate(next === "system" ? detectSystemLocale() : next, "languageSaved"));
@@ -170,7 +181,7 @@ export function AppSettingsDialog({
       <div className="fixed-member-list">{members.map((member) => <article key={member.id}><span className={`access-avatar whitelist ${member.edition}`}><Icon name="users" size={19} /></span><div><strong>{member.playerName}</strong><span className="fixed-member-badges"><small>{member.edition === "bedrock" ? "統合版専用" : "Java版"}</small>{member.whitelist ? <small>{member.edition === "bedrock" ? "統合版ホワイトリスト" : "ホワイトリスト"}</small> : null}{member.operator ? <small className="operator">権限者</small> : null}</span></div><div className="fixed-member-actions"><button className="small-button" type="button" disabled={busy !== ""} onClick={() => editMember(member)}>編集</button><button className="small-button" type="button" disabled={busy !== "" || !canApply} onClick={() => applyMembers([member])}>この人を反映</button><button className="icon-button danger-icon" type="button" disabled={busy !== ""} onClick={() => deleteMember(member)} aria-label={`${member.playerName}を削除`}><Icon name="trash" size={17} /></button></div></article>)}{members.length === 0 ? <div className="panel-empty compact"><p>保存されたメンバーはいません。種類と名前を選んで追加してください。</p></div> : null}</div>
       <p className="privacy-note"><Icon name="info" size={16} />統合版専用メンバーは、PaperではFloodgateの統合版ホワイトリスト、BDSでは許可リストへ反映します。Java版メンバーとは同名でも別に保存できます。</p></> : null}
     {section === "pro" ? <><span className="section-kicker">ADVANCED OPERATIONS</span><h3>{supporter.advancedOperationsTitle}</h3><p>{supporter.advancedOperationsBody}</p><ProOperationsPanel servers={servers} statuses={statuses} selectedServerId={server?.id} onStatusesChanged={onStatusesChanged} onAppearanceChanged={onAppearanceChanged} notify={notify} fail={fail} /></> : null}
-    {section === "plan" ? <><span className="section-kicker">SUPPORT</span><h3>{supporter.title}</h3><p>{supporter.intro}</p><div className="plan-grid"><article className="current"><span>{supporter.freeKicker}</span><h4>{supporter.freeTitle}</h4><ul>{supporter.freeFeatures.map((feature) => <li key={feature}>{feature}</li>)}</ul></article><article><span>{supporter.candidateKicker}</span><h4>{supporter.candidateTitle}</h4><ul>{supporter.candidateFeatures.map((feature) => <li key={feature}>{feature}</li>)}</ul></article></div><div className="plan-policy"><strong>{supporter.pendingTitle}</strong><p>{supporter.pendingBody}</p><p>{supporter.afterStoppingBody}</p></div></> : null}
+    {section === "plan" ? <><span className="section-kicker">SUPPORT</span><h3>{supporter.title}</h3><p>{supporter.intro}</p><div className="plan-grid"><article className="current"><span>{supporter.freeKicker}</span><h4>{supporter.freeTitle}</h4><ul>{supporter.freeFeatures.map((feature) => <li key={feature}>{feature}</li>)}</ul></article><article><span>{supporter.candidateKicker}</span><h4>{supporter.candidateTitle}</h4><ul>{supporter.candidateFeatures.map((feature) => <li key={feature}>{feature}</li>)}</ul></article></div><div className="plan-policy">{supportConfig.enabled ? <><strong>{supporter.availableTitle}</strong><p>{supporter.availableBody}</p><button className="primary-button support-action-button" type="button" onClick={() => void openSponsors()}>{supporter.supportButton}</button></> : <><strong>{supporter.pendingTitle}</strong><p>{supporter.pendingBody}</p><a className="secondary-button support-setup-link" href={supportConfig.setupUrl} target="_blank" rel="noopener noreferrer">{supporter.setupGuideLink}</a><p className="support-guide-note">{supporter.setupGuideBody}</p></>}<p>{supporter.afterStoppingBody}</p></div></> : null}
     {section === "privacy" ? <><span className="section-kicker">LOCAL FIRST</span><h3>プライバシーとライセンス</h3><div className="privacy-list"><article><strong>{brand.productName}</strong><p>{locale === "ja" ? brand.descriptorJa : brand.descriptorEn}</p><small>{locale === "ja" ? brand.taglineJa : brand.tagline}</small></article><article><strong>診断データ</strong><p>CPU、メモリ、GPU、Java、保存先の情報はローカルで処理し、自動送信しません。</p></article><article><strong>広告・決済</strong><p>本番広告、決済、ライセンス認証は未接続です。ログ、ワールド名、プレイヤー名、IPアドレスを広告目的で送信しません。</p></article><article><strong>オープンソース</strong><p>配布前に依存ライセンス一覧と第三者表示を同梱します。</p></article><article><strong>{rebrand.nonAffiliationTitle}</strong><p>{rebrand.nonAffiliationBody}</p></article></div></> : null}
     {section === "update" ? <AppUpdatePanel hasActiveServers={Object.values(statuses).some((value) => value.state !== "stopped" && value.state !== "crashed")} notify={notify} fail={fail} /> : null}
     {section === "uninstall" ? <><span className="section-kicker">WINDOWS APP</span><h3>アプリをアンインストール</h3><p>{rebrand.uninstallDescription}</p><div className="uninstall-card"><Icon name="trash" size={28} /><div><strong>{rebrand.uninstallPanelTitle}</strong><small>{rebrand.uninstallDetail}</small></div><button className="danger-button" type="button" disabled={busy !== ""} onClick={async () => { if (!await confirmDanger(rebrand.uninstallConfirm)) return; setBusy("uninstall"); try { await backend.openUninstallSettings(); notify(rebrand.uninstallSuccess); } catch (reason) { fail(String(reason)); } finally { setBusy(""); } }}><Icon name="trash" size={17} />{rebrand.uninstallButton}</button></div><p className="privacy-note"><Icon name="info" size={16} />{rebrand.uninstallNote}</p></> : null}

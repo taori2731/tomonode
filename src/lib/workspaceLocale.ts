@@ -1,5 +1,5 @@
 import type { AppLocale } from "./i18n";
-import { brand } from "./brand";
+import { releaseAnnouncements } from "./releaseNews";
 
 const values = {
   ja: ["サーバー、プレイヤー、テンプレート、設定を検索…", "サーバー", "プレイヤー", "テンプレート", "発見", "ニュース", "すべてのサーバー", "構成から始める", "対応内容を探す", "更新情報とお知らせ", "検索結果はありません", "機能", "設定"],
@@ -34,29 +34,6 @@ export function supportedCatalog(locale: AppLocale) {
   return ["Minecraft Java", "Minecraft Bedrock", "Palworld", "Geyser + Floodgate"].map((title, index) => ({ title, detail: catalogDetails[locale][index] }));
 }
 
-const announcementText: Record<AppLocale, readonly string[]> = {
-  ja: ["料金プラン表示を廃止し、支援は任意という方針に変更しました。", "支援受付は準備中です。将来の新機能の先行体験や開発中機能へのフィードバック参加、限定外観を候補として検討しています。寄付先・価格・決済方法は未定です。", "高度な運用は全員が利用できます。安定機能、安全機能、バックアップと復元、サーバーデータへのアクセスを支援の有無で制限しません。"],
-  en: ["The paid-plan display was removed; support is optional.", "Support sign-up is being prepared. Early access to future features, feedback participation for features in development, and limited appearance options are candidates only; the recipient, price, and payment method are undecided.", "Advanced operations are available to everyone. Stable and safety features, backup and restore, and access to server data are not restricted by support status."],
-  "zh-CN": ["已移除付费方案显示；支持项目完全自愿。", "支持受理正在准备中。未来新增功能的提前体验、参与开发中功能反馈和限定外观只是候选方案；接收方、价格和支付方式尚未确定。", "高级运维面向所有人开放。稳定功能、安全功能、备份与恢复以及服务器数据访问不会因是否支持项目而受限。"],
-  "zh-TW": ["已移除付費方案顯示；支援專案完全自願。", "支援受理正在準備中。未來新增功能的提前體驗、參與開發中功能的意見回饋與限定外觀只是候選方案；接收方、價格與付款方式尚未確定。", "進階運作提供給所有人。穩定功能、安全功能、備份與還原，以及伺服器資料存取不會因是否支援專案而受限。"],
-  ko: ["유료 플랜 표시를 없애고 응원은 선택 사항으로 전환했습니다.", "응원 접수를 준비 중입니다. 앞으로 추가될 기능의 사전 체험, 개발 중 기능 피드백 참여, 한정 외관을 후보로 검토하고 있으며 수신처·가격·결제 방법은 정해지지 않았습니다.", "고급 운영은 모두에게 제공됩니다. 안정 기능, 안전 기능, 백업과 복원, 서버 데이터 접근은 응원 여부로 제한하지 않습니다."],
-  es: ["Eliminamos la presentación de planes de pago; el apoyo es opcional.", "Estamos preparando la recepción de apoyos. Consideramos como candidatos el acceso anticipado a futuras funciones, la participación en comentarios sobre funciones en desarrollo y apariencias limitadas; el destinatario, el precio y el método de pago aún no están decididos.", "Las operaciones avanzadas están disponibles para todos. Las funciones estables y de seguridad, las copias y restauraciones y el acceso a los datos del servidor no se limitan por apoyar o no el proyecto."],
-  de: ["Die Anzeige kostenpflichtiger Angebote wurde entfernt; Unterstützung ist freiwillig.", "Die Unterstützungsannahme wird vorbereitet. Früher Zugang zu künftigen Funktionen, Feedback zu Funktionen in Entwicklung und exklusive Darstellungen sind nur Kandidaten; Empfänger, Preis und Zahlungsweg stehen noch nicht fest.", "Der erweiterte Betrieb steht allen offen. Stabile und Sicherheitsfunktionen, Sicherung und Wiederherstellung sowie der Zugriff auf Serverdaten werden nicht nach Unterstützung eingeschränkt."],
-  fr: ["Nous avons supprimé l’affichage des offres payantes : le soutien est facultatif.", "Le soutien est en préparation. L’accès anticipé aux futures fonctions, la participation aux retours sur les fonctions en développement et des apparences limitées sont des pistes seulement ; destinataire, prix et mode de paiement ne sont pas définis.", "Les opérations avancées sont accessibles à tout le monde. Les fonctions stables et de sécurité, la sauvegarde et la restauration, ainsi que l’accès aux données du serveur ne sont pas limités selon le soutien."],
-  "pt-BR": ["Removemos a exibição de planos pagos; o apoio é opcional.", "O recebimento de apoio está sendo preparado. Acesso antecipado a novos recursos, participação em feedback de recursos em desenvolvimento e aparências limitadas são apenas candidatos; destinatário, preço e forma de pagamento ainda não foram definidos.", "As operações avançadas estão disponíveis para todos. Recursos estáveis e de segurança, backup e restauração e acesso aos dados do servidor não são limitados conforme o apoio."],
-};
-
 export function workspaceAnnouncements(locale: AppLocale) {
-  const titles: Record<AppLocale, readonly string[]> = {
-    ja: [`${brand.productName} 0.4.8`, "料金プランを廃止し、任意支援へ", "高度な運用を全員へ"],
-    en: [`${brand.productName} 0.4.8`, "Paid plans removed; optional support", "Advanced operations for everyone"],
-    "zh-CN": [`${brand.productName} 0.4.8`, "移除付费方案，支持完全自愿", "高级运维面向所有人"],
-    "zh-TW": [`${brand.productName} 0.4.8`, "移除付費方案，支援完全自願", "進階運作提供給所有人"],
-    ko: [`${brand.productName} 0.4.8`, "유료 플랜 폐지, 응원은 선택 사항", "모두를 위한 고급 운영"],
-    es: [`${brand.productName} 0.4.8`, "Planes de pago eliminados; apoyo opcional", "Operaciones avanzadas para todos"],
-    de: [`${brand.productName} 0.4.8`, "Kostenpflichtige Angebote entfernt; Unterstützung freiwillig", "Erweiterter Betrieb für alle"],
-    fr: [`${brand.productName} 0.4.8`, "Offres payantes supprimées ; soutien facultatif", "Opérations avancées pour tous"],
-    "pt-BR": [`${brand.productName} 0.4.8`, "Planos pagos removidos; apoio opcional", "Operações avançadas para todos"],
-  };
-  return announcementText[locale].map((body, index) => ({ date: ["2026-09-14", "2026-09-13", "2026-09-12"][index], tag: ["APP", "SUPPORT", "OPERATIONS"][index], title: titles[locale][index], body }));
+  return releaseAnnouncements(locale);
 }

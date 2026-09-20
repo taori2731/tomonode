@@ -1,5 +1,4 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { installDocumentTranslation } from "./documentTranslation";
 import { hasTranslationCatalog, loadTranslationCatalog } from "./translationCatalog";
 
 export type AppLocale = "en" | "ja" | "zh-CN" | "zh-TW" | "ko" | "es" | "de" | "fr" | "pt-BR";
@@ -199,7 +198,22 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!hasTranslationCatalog(locale)) return;
     document.documentElement.lang = locale;
-    return installDocumentTranslation(locale);
+    // Japanese is the authored source language, so observing and walking every
+    // DOM mutation would only repeat text unchanged. Keep that large translator
+    // out of the startup bundle and load it only when another locale needs it.
+    if (locale === "ja" && (!document.documentElement.dataset.documentTranslationLocale || document.documentElement.dataset.documentTranslationLocale === "ja")) return;
+    let active = true;
+    let dispose: (() => void) | undefined;
+    void import("./documentTranslation").then(({ installDocumentTranslation }) => {
+      if (!active) return;
+      dispose = installDocumentTranslation(locale);
+    }).catch((error: unknown) => {
+      console.error(`Failed to install the ${locale} document translator.`, error);
+    });
+    return () => {
+      active = false;
+      dispose?.();
+    };
   }, [catalogRevision, locale]);
 
   const value = useMemo<I18nValue>(() => ({ preference, locale, setPreference, t: (key) => translate(locale, key) }), [locale, preference]);

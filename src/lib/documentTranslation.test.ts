@@ -14,6 +14,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   document.body.innerHTML = "";
+  delete document.documentElement.dataset.documentTranslationLocale;
 });
 
 describe("generated UI translations", () => {
@@ -97,6 +98,19 @@ describe("document translation", () => {
     expect(button.textContent).toBe("サーバー診断");
     expect(button.getAttribute("title")).toBe("原因を調べる");
     stopJapanese();
+  });
+
+  it("batches translations for newly mounted screens instead of blocking the mutation callback", async () => {
+    document.body.innerHTML = "<main></main>";
+    const stopEnglish = installDocumentTranslation("en");
+    const panel = document.createElement("section");
+    panel.innerHTML = '<button aria-label="サーバー診断">サーバー診断</button>';
+    document.querySelector("main")?.append(panel);
+
+    expect(panel.textContent).toBe("サーバー診断");
+    await expect.poll(() => panel.textContent).toBe("Server diagnostics");
+    expect(panel.querySelector("button")?.getAttribute("aria-label")).toBe("Server diagnostics");
+    stopEnglish();
   });
 
   it("translates log empty states while preserving actual Minecraft log rows", () => {

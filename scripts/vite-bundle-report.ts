@@ -4,7 +4,7 @@ import { gzipSync } from "node:zlib";
 import type { Plugin } from "vite";
 
 export const DEFAULT_BUNDLE_BUDGETS = {
-  entryJavaScriptBytes: 500 * 1024,
+  entryJavaScriptBytes: 450 * 1024,
   chunkJavaScriptBytes: 500 * 1024,
   totalJavaScriptGzipBytes: 1200 * 1024,
   totalCssBytes: 250 * 1024,
@@ -72,6 +72,15 @@ export function bundleReportPlugin(): Plugin {
         assets,
       };
       this.emitFile({ type: "asset", fileName: "bundle-report.json", source: `${JSON.stringify(report, null, 2)}\n` });
+      const entryBytes = Math.max(0, ...chunks.filter((chunk) => chunk.entry).map((chunk) => chunk.rawBytes));
+      const chunkBytes = Math.max(0, ...chunks.map((chunk) => chunk.rawBytes));
+      const violations = [
+        entryBytes > DEFAULT_BUNDLE_BUDGETS.entryJavaScriptBytes ? `entry JavaScript ${entryBytes} > ${DEFAULT_BUNDLE_BUDGETS.entryJavaScriptBytes}` : "",
+        chunkBytes > DEFAULT_BUNDLE_BUDGETS.chunkJavaScriptBytes ? `largest JavaScript chunk ${chunkBytes} > ${DEFAULT_BUNDLE_BUDGETS.chunkJavaScriptBytes}` : "",
+        totalJavaScriptGzipBytes > DEFAULT_BUNDLE_BUDGETS.totalJavaScriptGzipBytes ? `total gzip JavaScript ${totalJavaScriptGzipBytes} > ${DEFAULT_BUNDLE_BUDGETS.totalJavaScriptGzipBytes}` : "",
+        totalCssBytes > DEFAULT_BUNDLE_BUDGETS.totalCssBytes ? `total CSS ${totalCssBytes} > ${DEFAULT_BUNDLE_BUDGETS.totalCssBytes}` : "",
+      ].filter(Boolean);
+      if (violations.length) this.error(`Low-spec bundle budget exceeded: ${violations.join(", ")}`);
     },
   };
 }

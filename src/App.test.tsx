@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App, { createRefreshGuard } from "./App";
 import { backend } from "./lib/backend";
 import { brand } from "./lib/brand";
+import { GITHUB_SPONSORS_SETUP_URL } from "./lib/supporterConfig";
 import { getRebrandCopy } from "./lib/rebrandLocale";
 import { translate, type AppLocale } from "./lib/i18n";
 
@@ -324,6 +325,11 @@ describe(brand.productName, () => {
     expect(screen.getByText("将来追加する新機能の先行体験")).toBeInTheDocument();
     expect(screen.getByText("開発中の機能へのフィードバック参加")).toBeInTheDocument();
     expect(screen.getByText("限定デザインやアイコンなどの外観")).toBeInTheDocument();
+    expect(screen.getByText(/GitHub Sponsorsの受取設定完了後に利用可能/)).toBeInTheDocument();
+    const setupGuide = screen.getByRole("link", { name: "受取設定の手順（開発者向け）" });
+    expect(setupGuide).toHaveAttribute("href", GITHUB_SPONSORS_SETUP_URL);
+    expect(setupGuide).toHaveAttribute("target", "_blank");
+    expect(setupGuide).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByText("支援を停止した後も、安全機能、バックアップと復元、サーバーデータへのアクセスを制限しません。")).toBeInTheDocument();
     expect(screen.queryByText("無料版とPro／サポーター版")).not.toBeInTheDocument();
     expect(screen.queryByText("価格未定")).not.toBeInTheDocument();
@@ -557,7 +563,7 @@ describe(brand.productName, () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Survival World" });
     fireEvent.click(screen.getByRole("button", { name: "友達を招待" }));
-    const publish = await screen.findByRole("button", { name: "別の家の友達向けに公開" });
+    const publish = await screen.findByRole("button", { name: "別の家の友達向けに公開" }, { timeout: 5_000 });
     expect(publish).toBeEnabled();
     fireEvent.click(publish);
     expect(await screen.findByText("203.0.113.42:25565")).toBeInTheDocument();

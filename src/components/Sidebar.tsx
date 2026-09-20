@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { AppSection, RuntimeStatus, ServerProfile, TabId } from "../types";
 import { Icon } from "./Icon";
 import { useI18n } from "../lib/i18n";
@@ -19,18 +19,28 @@ interface Props {
   onAppSettings: () => void;
   onImport: () => void;
   onDelete: (server: ServerProfile) => void;
-  activeTab: TabId;
   availableTabs: readonly TabId[];
-  onNavigate: (tab: TabId) => void;
   activeSection: AppSection;
   onSectionNavigate: (section: AppSection) => void;
 }
 
-export function Sidebar({ servers, serverIcons, selectedId, statuses, onSelect, onCreate, onAppSettings, onImport, onDelete, activeTab, availableTabs, onNavigate, activeSection, onSectionNavigate }: Props) {
+function sameDisplayedStatuses(servers: ServerProfile[], left: Record<string, RuntimeStatus>, right: Record<string, RuntimeStatus>) {
+  if (left === right) return true;
+  return servers.every((server) => {
+    const previous = left[server.id];
+    const next = right[server.id];
+    return previous?.state === next?.state && previous?.playerCount === next?.playerCount && previous?.maxPlayers === next?.maxPlayers;
+  });
+}
+
+export const Sidebar = memo(function Sidebar({ servers, serverIcons, selectedId, statuses, onSelect, onCreate, onAppSettings, onImport, onDelete, availableTabs, activeSection, onSectionNavigate }: Props) {
   const { locale, t } = useI18n();
   const workspace = workspaceText(locale);
   const [query, setQuery] = useState("");
-  const filteredServers = servers.filter((server) => `${server.name} ${serverTypeLabel[server.serverType]} ${getServerVersionLabel(server)}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const filteredServers = useMemo(() => {
+    const normalized = query.trim().toLocaleLowerCase();
+    return servers.filter((server) => `${server.name} ${serverTypeLabel[server.serverType]} ${getServerVersionLabel(server)}`.toLocaleLowerCase().includes(normalized));
+  }, [query, servers]);
   const runningCount = servers.filter((server) => statuses[server.id]?.state === "running").length;
   const stateText = { running: t("running"), starting: t("starting"), stopping: t("stopping"), restarting: t("restarting"), stopped: t("stopped"), crashed: t("crashed"), error: t("crashed"), unknown: "—" } as const;
   return (
@@ -85,4 +95,15 @@ export function Sidebar({ servers, serverIcons, selectedId, statuses, onSelect, 
       </div>
     </aside>
   );
-}
+}, (previous, next) => previous.servers === next.servers
+  && previous.serverIcons === next.serverIcons
+  && previous.selectedId === next.selectedId
+  && previous.activeSection === next.activeSection
+  && previous.availableTabs === next.availableTabs
+  && previous.onSelect === next.onSelect
+  && previous.onCreate === next.onCreate
+  && previous.onAppSettings === next.onAppSettings
+  && previous.onImport === next.onImport
+  && previous.onDelete === next.onDelete
+  && previous.onSectionNavigate === next.onSectionNavigate
+  && sameDisplayedStatuses(next.servers, previous.statuses, next.statuses));

@@ -1,6 +1,6 @@
 import { createPortal } from "react-dom";
+import { useEffect, useState } from "react";
 import { useI18n, type AppLocale } from "../lib/i18n";
-import { translateGeneratedText } from "../lib/documentTranslation";
 import { brand } from "../lib/brand";
 
 type Props = {
@@ -36,22 +36,53 @@ function hasUntranslatedJapanese(source: string, translated: string, locale: App
   return !chineseLocale && translated === source && han.test(source);
 }
 
+function immediateCopy(source: string, locale: AppLocale, fallbackText: string) {
+  return hasUntranslatedJapanese(source, source, locale) ? fallbackText : source;
+}
+
 export function OperationOverlay({ title, detail, stages = ["準備", "安全確認", "反映"], progress }: Props) {
   const { locale } = useI18n();
   const messages = fallback[locale];
-  const translatedTitle = translateGeneratedText(title, locale);
-  const translatedDetail = translateGeneratedText(detail, locale);
-  const renderedStages = stages.map((stage, index) => {
-    const translated = translateGeneratedText(stage, locale);
-    return hasUntranslatedJapanese(stage, translated, locale) ? `${messages.step} ${index + 1}` : translated;
-  });
+  const stageKey = stages.join("\u0000");
+  const [translated, setTranslated] = useState(() => ({
+    title: immediateCopy(title, locale, messages.title),
+    detail: immediateCopy(detail, locale, messages.detail),
+    stages: stages.map((stage, index) => immediateCopy(stage, locale, `${messages.step} ${index + 1}`)),
+  }));
+
+  useEffect(() => {
+    let active = true;
+    if (locale === "ja") {
+      setTranslated({ title, detail, stages: [...stages] });
+      return () => { active = false; };
+    }
+    setTranslated({
+      title: immediateCopy(title, locale, messages.title),
+      detail: immediateCopy(detail, locale, messages.detail),
+      stages: stages.map((stage, index) => immediateCopy(stage, locale, `${messages.step} ${index + 1}`)),
+    });
+    void import("../lib/documentTranslation").then(({ translateGeneratedText }) => {
+      if (!active) return;
+      const translatedTitle = translateGeneratedText(title, locale);
+      const translatedDetail = translateGeneratedText(detail, locale);
+      setTranslated({
+        title: hasUntranslatedJapanese(title, translatedTitle, locale) ? messages.title : translatedTitle,
+        detail: hasUntranslatedJapanese(detail, translatedDetail, locale) ? messages.detail : translatedDetail,
+        stages: stages.map((stage, index) => {
+          const value = translateGeneratedText(stage, locale);
+          return hasUntranslatedJapanese(stage, value, locale) ? `${messages.step} ${index + 1}` : value;
+        }),
+      });
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [detail, locale, messages, stageKey, title]);
   return createPortal(
     <div className="wizard-loading-overlay operation-overlay" role="status" aria-label={`${brand.productName}: ${messages.flow}`} aria-live="polite" aria-busy="true">
       <span className="spinner large" />
-      <strong>{hasUntranslatedJapanese(title, translatedTitle, locale) ? messages.title : translatedTitle}</strong>
-      <p>{hasUntranslatedJapanese(detail, translatedDetail, locale) ? messages.detail : translatedDetail}</p>
+      <strong>{translated.title}</strong>
+      <p>{translated.detail}</p>
       <div className="wizard-loading-stages" aria-label={messages.flow}>
-        {renderedStages.map((stage, index) => <span key={`${stage}-${index}`}>{stage}</span>)}
+        {translated.stages.map((stage, index) => <span key={`${stage}-${index}`}>{stage}</span>)}
       </div>
       {progress ? <div className="operation-progress">
         <div

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { backend, confirmDanger } from "../lib/backend";
 import type { BackupInfo, PcDiagnosis, RuntimeStatus, ServerDiagnosisReport, ServerProfile } from "../types";
 import { Icon } from "./Icon";
@@ -7,7 +7,9 @@ import { OperationOverlay } from "./OperationOverlay";
 const gib = (mib: number) => `${(mib / 1024).toFixed(1)} GiB`;
 const size = (bytes: number) => bytes > 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
 
-export function OperationsPanel({ server, status, onUpdated, notify, fail }: { server: ServerProfile; status: RuntimeStatus; onUpdated: (server: ServerProfile) => void; notify: (message: string) => void; fail: (message: string) => void }) {
+type OperationsPanelProps = { server: ServerProfile; status: RuntimeStatus; onUpdated: (server: ServerProfile) => void; notify: (message: string) => void; fail: (message: string) => void };
+
+export const OperationsPanel = memo(function OperationsPanel({ server, status, onUpdated, notify, fail }: OperationsPanelProps) {
   const [diagnosis, setDiagnosis] = useState<PcDiagnosis>();
   const [serverDiagnosis, setServerDiagnosis] = useState<ServerDiagnosisReport>();
   const [backups, setBackups] = useState<BackupInfo[]>([]);
@@ -107,4 +109,8 @@ export function OperationsPanel({ server, status, onUpdated, notify, fail }: { s
       stages={busy === "diagnose" || busy === "server-diagnose" ? ["情報収集", "問題分析", "結果作成"] : ["対象確認", "整合性確認", "処理完了"]}
     /> : null}
   </div>;
-}
+}, (previous, next) => previous.server === next.server
+  && previous.status.state === next.status.state
+  && previous.onUpdated === next.onUpdated
+  && previous.notify === next.notify
+  && previous.fail === next.fail);
