@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./components/Icon";
 import { OverviewTab } from "./components/OverviewTab";
 import { OperationOverlay } from "./components/OperationOverlay";
@@ -119,7 +119,7 @@ export function AppContent() {
   const { locale, t } = useI18n();
   const workspaceCopy = workspaceText(locale);
   const homeCopy = homeText(locale);
-  const tabs: { id: TabId; label: string; icon: Parameters<typeof Icon>[0]["name"] }[] = [
+  const tabs = useMemo<{ id: TabId; label: string; icon: Parameters<typeof Icon>[0]["name"] }[]>(() => [
     { id: "overview", label: t("overview"), icon: "chart" },
     { id: "console", label: t("console"), icon: "console" },
     { id: "players", label: t("players"), icon: "users" },
@@ -129,7 +129,7 @@ export function AppContent() {
     { id: "lab", label: t("lab"), icon: "memory" },
     { id: "safety", label: t("safety"), icon: "check" },
     { id: "settings", label: t("settings"), icon: "gear" },
-  ];
+  ], [t]);
   const [servers, setServers] = useState<ServerProfile[]>([]);
   const [selectedId, setSelectedId] = useState<string>();
   const [statuses, setStatuses] = useState<Record<string, RuntimeStatus>>({});
@@ -205,7 +205,7 @@ export function AppContent() {
     const refresh = createRefreshGuard(async () => {
       if (!active || document.hidden) return;
       const next = await backend.status(selectedId);
-      if (active) setStatuses((current) => sameStatus(current[selectedId], next) ? current : { ...current, [selectedId]: next });
+      if (active) startTransition(() => setStatuses((current) => sameStatus(current[selectedId], next) ? current : { ...current, [selectedId]: next }));
     });
     refresh().catch(() => undefined);
     const interval = ["running", "starting"].includes(selectedStatus.state) ? 1_000 : 3_000;
@@ -223,10 +223,10 @@ export function AppContent() {
       if (!active || document.hidden) return;
       const results = await Promise.all(background.map(async (server) => [server.id, await backend.status(server.id)] as const));
       if (!active) return;
-      setStatuses((current) => {
+      startTransition(() => setStatuses((current) => {
         if (results.every(([id, status]) => sameStatus(current[id], status))) return current;
         return { ...current, ...Object.fromEntries(results) };
-      });
+      }));
     });
     refresh().catch(() => undefined);
     const timer = window.setInterval(() => refresh().catch(() => undefined), 10_000);
@@ -241,7 +241,7 @@ export function AppContent() {
     const refresh = createRefreshGuard(async () => {
       if (!active || document.hidden) return;
       const entries = await backend.logs(selectedId);
-      if (active) setLogs((current) => sameLogs(current, entries) ? current : entries);
+      if (active) startTransition(() => setLogs((current) => sameLogs(current, entries) ? current : entries));
     });
     refresh().catch(() => undefined);
     const shouldPoll = selectedStatus.state === "running" && (activeTab === "overview" || activeTab === "console");

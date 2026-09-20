@@ -26,6 +26,13 @@ pub type ProcessMap = Mutex<HashMap<String, ManagedProcess>>;
 pub type StoppingMap = Mutex<HashMap<String, ManagedProcess>>;
 pub type LogMap = Arc<Mutex<HashMap<String, Vec<LogEntry>>>>;
 
+#[derive(Clone, PartialEq, Eq)]
+struct LogEntryAnchor {
+    timestamp: String,
+    level: String,
+    message: String,
+}
+
 /// Owns a child between `spawn` and registration in ProcessMap. `std::process::Child`
 /// does not terminate on Drop, so every early-return path must explicitly reap it.
 struct UnregisteredChild {
@@ -65,7 +72,14 @@ pub struct ManagedProcess {
     system: System,
     last_metrics_query: Option<Instant>,
     metrics_log_start_index: Option<usize>,
-    session_log_start_index: usize,
+    /// Cached status telemetry keeps the 1-2 second UI poll cheap. The actual
+    /// ping/sysinfo work is performed only when this cache is stale.
+    cached_status: Option<RuntimeStatus>,
+    last_status_probe: Option<Instant>,
+    status_probe_in_flight: bool,
+    online_players: BTreeMap<String, String>,
+    online_players_log_index: usize,
+    online_players_log_anchor: Option<LogEntryAnchor>,
     #[cfg(windows)]
     job_handle: isize,
 }
@@ -283,7 +297,12 @@ pub fn start(
             system,
             last_metrics_query: None,
             metrics_log_start_index: None,
-            session_log_start_index,
+            cached_status: None,
+            last_status_probe: None,
+            status_probe_in_flight: false,
+            online_players: BTreeMap::new(),
+            online_players_log_index: session_log_start_index,
+            online_players_log_anchor: None,
             #[cfg(windows)]
             job_handle,
         },
@@ -457,7 +476,34 @@ pub fn runtime_status(
 
     let pid = process.pid;
     let uptime_seconds = process.started_at.elapsed().as_secs();
-    let session_log_start_index = process.session_log_start_index;
+    let probe_interval =
+        process
+            .cached_status
+            .as_ref()
+            .map_or(Duration::from_millis(750), |status| {
+                if status.state == "starting" {
+                    Duration::from_millis(1_000)
+                } else {
+                    Duration::from_millis(1_500)
+                }
+            });
+    if process.status_probe_in_flight
+        || process
+            .last_status_probe
+            .is_some_and(|last| last.elapsed() < probe_interval)
+    {
+        return process
+            .cached_status
+            .clone()
+            .unwrap_or_else(|| RuntimeStatus {
+                state: "starting".into(),
+                ..stopped_status(profile)
+            });
+    }
+    process.status_probe_in_flight = true;
+    let cached_online_players = process.online_players.clone();
+    let online_players_log_index = process.online_players_log_index;
+    let online_players_log_anchor = process.online_players_log_anchor.clone();
     drop(guard);
 
     // The local status ping is intentionally outside the process-map lock so a slow
@@ -483,18 +529,21 @@ pub fn runtime_status(
         .unwrap_or_default();
     let ping_latency_ms = ping.map(|players| players.latency_ms);
 
-    let mut online_players = online_players_from_logs(
+    let mut online_players = cached_online_players;
+    let (online_players_log_index, online_players_log_anchor) = update_online_players_from_logs(
         logs,
         &profile.id,
-        session_log_start_index,
+        online_players_log_index,
+        online_players_log_anchor,
         adapter.is_minecraft_bedrock(),
+        &mut online_players,
     );
     for name in ping_sample {
         online_players
             .entry(name.to_ascii_lowercase())
             .or_insert(name);
     }
-    let online_players = online_players.into_values().collect();
+    let online_player_names = online_players.values().cloned().collect();
 
     let log_count = logs.lock().unwrap().get(&profile.id).map_or(0, Vec::len);
     let mut guard = processes.lock().unwrap();
@@ -539,11 +588,11 @@ pub fn runtime_status(
     drop(guard);
     let tps = metrics_log_start_index.and_then(|start| latest_tps(logs, &profile.id, start));
 
-    RuntimeStatus {
+    let runtime = RuntimeStatus {
         state: state.into(),
         player_count,
         max_players,
-        online_players,
+        online_players: online_player_names,
         memory_used_mib,
         uptime_seconds,
         address: format!("localhost:{}", profile.port),
@@ -552,7 +601,29 @@ pub fn runtime_status(
         tps_supported: metrics_command(profile).is_some(),
         ping_latency_ms,
         palworld: None,
+    };
+    let mut guard = processes.lock().unwrap();
+    let Some(process) = guard.get_mut(&profile.id) else {
+        // The child can move to StoppingMap while the final telemetry is being
+        // assembled. Do not leave a stale in-flight marker on a live entry.
+        drop(guard);
+        return stopping_status(profile, stopping).unwrap_or_else(|| stopped_status(profile));
+    };
+    if process.pid != pid {
+        // A stop/start race replaced the child while the old probe was in
+        // flight. Never apply telemetry from the old PID to the new process.
+        return RuntimeStatus {
+            state: "starting".into(),
+            ..stopped_status(profile)
+        };
     }
+    process.online_players = online_players;
+    process.online_players_log_index = online_players_log_index;
+    process.online_players_log_anchor = online_players_log_anchor;
+    process.last_status_probe = Some(Instant::now());
+    process.status_probe_in_flight = false;
+    process.cached_status = Some(runtime.clone());
+    runtime
 }
 
 fn stopped_status(profile: &ServerProfile) -> RuntimeStatus {
@@ -582,15 +653,33 @@ fn configured_max_players(profile: &ServerProfile) -> u32 {
         })
 }
 
-fn online_players_from_logs(
+fn update_online_players_from_logs(
     logs: &LogMap,
     server_id: &str,
     start: usize,
+    expected_anchor: Option<LogEntryAnchor>,
     is_bedrock: bool,
-) -> BTreeMap<String, String> {
+    online: &mut BTreeMap<String, String>,
+) -> (usize, Option<LogEntryAnchor>) {
     let guard = logs.lock().unwrap();
-    let mut online = BTreeMap::new();
-    for entry in guard.get(server_id).into_iter().flatten().skip(start) {
+    let Some(entries) = guard.get(server_id) else {
+        return (start, expected_anchor);
+    };
+    // The log reader keeps a bounded tail and periodically drains old entries.
+    // If that happened since the previous probe, rebuild from the retained tail
+    // so a stale cursor cannot silently miss a leave event.
+    let cursor_anchor_changed = start > 0
+        && expected_anchor.is_some()
+        && entries
+            .get(start.saturating_sub(1))
+            .is_some_and(|entry| Some(log_entry_anchor(entry)) != expected_anchor);
+    let scan_start = if start > entries.len() || cursor_anchor_changed {
+        online.clear();
+        0
+    } else {
+        start
+    };
+    for entry in entries.iter().skip(scan_start) {
         let Some((name, joined)) = player_presence_event(&entry.message, is_bedrock) else {
             continue;
         };
@@ -601,7 +690,20 @@ fn online_players_from_logs(
             online.remove(&key);
         }
     }
-    online
+    let cursor = entries.len();
+    let anchor = cursor
+        .checked_sub(1)
+        .and_then(|index| entries.get(index))
+        .map(log_entry_anchor);
+    (cursor, anchor)
+}
+
+fn log_entry_anchor(entry: &LogEntry) -> LogEntryAnchor {
+    LogEntryAnchor {
+        timestamp: entry.timestamp.clone(),
+        level: entry.level.clone(),
+        message: entry.message.clone(),
+    }
 }
 
 fn player_presence_event(line: &str, is_bedrock: bool) -> Option<(String, bool)> {
@@ -838,12 +940,13 @@ mod tests {
     use super::{
         LogMap, ManagedProcess, ProcessMap, StoppingMap, bedrock_executable, begin_stop, is_busy,
         is_running, is_stopping, parse_tps, player_presence_event, runtime_status,
-        verified_bedrock_executable,
+        update_online_players_from_logs, verified_bedrock_executable,
     };
-    use crate::models::{BasicSettings, ServerProfile};
+    use crate::models::{BasicSettings, LogEntry, RuntimeStatus, ServerProfile};
     use std::{
+        collections::BTreeMap,
         process::{Command, Stdio},
-        time::Instant,
+        time::{Duration, Instant},
     };
     use sysinfo::System;
 
@@ -990,10 +1093,104 @@ mod tests {
             system: System::new(),
             last_metrics_query: None,
             metrics_log_start_index: None,
-            session_log_start_index: 0,
+            cached_status: None,
+            last_status_probe: None,
+            status_probe_in_flight: false,
+            online_players: BTreeMap::new(),
+            online_players_log_index: 0,
+            online_players_log_anchor: None,
             #[cfg(windows)]
             job_handle: 0,
         }
+    }
+
+    #[test]
+    fn runtime_status_returns_a_fresh_cache_without_starting_a_probe() {
+        let processes = ProcessMap::default();
+        let stopping = StoppingMap::default();
+        let logs = LogMap::default();
+        let mut profile = bedrock_profile(std::path::Path::new("."), "bedrock_server.exe");
+        profile.id = "server-a".into();
+        let cached = RuntimeStatus {
+            state: "running".into(),
+            player_count: 2,
+            max_players: 20,
+            online_players: vec!["Alex".into(), "Steve".into()],
+            memory_used_mib: 512,
+            uptime_seconds: 42,
+            address: "localhost:19132".into(),
+            cpu_percent: 12.5,
+            tps: Some(20.0),
+            tps_supported: true,
+            ping_latency_ms: Some(8),
+            palworld: None,
+        };
+        let mut process = test_managed_process(profile.port);
+        process.cached_status = Some(cached.clone());
+        process.last_status_probe = Some(Instant::now());
+        processes
+            .lock()
+            .unwrap()
+            .insert(profile.id.clone(), process);
+        let cleanup = TestProcessCleanup {
+            server_id: &profile.id,
+            processes: &processes,
+            stopping: &stopping,
+        };
+
+        let started = Instant::now();
+        let returned = runtime_status(&profile, &processes, &stopping, &logs);
+        assert!(started.elapsed() < Duration::from_millis(300));
+        assert_eq!(returned.state, cached.state);
+        assert_eq!(returned.online_players, cached.online_players);
+        assert_eq!(returned.uptime_seconds, cached.uptime_seconds);
+
+        let guard = processes.lock().unwrap();
+        let process = guard.get(&profile.id).unwrap();
+        assert!(!process.status_probe_in_flight);
+        assert_eq!(process.online_players_log_index, 0);
+        assert_eq!(
+            process.cached_status.as_ref().unwrap().uptime_seconds,
+            cached.uptime_seconds
+        );
+        drop(guard);
+        cleanup.stop();
+    }
+
+    #[test]
+    fn runtime_status_returns_a_starting_fallback_while_probe_is_in_flight() {
+        let processes = ProcessMap::default();
+        let stopping = StoppingMap::default();
+        let logs = LogMap::default();
+        let mut profile = bedrock_profile(std::path::Path::new("."), "bedrock_server.exe");
+        profile.id = "server-a".into();
+        let mut process = test_managed_process(profile.port);
+        process.status_probe_in_flight = true;
+        processes
+            .lock()
+            .unwrap()
+            .insert(profile.id.clone(), process);
+        let cleanup = TestProcessCleanup {
+            server_id: &profile.id,
+            processes: &processes,
+            stopping: &stopping,
+        };
+
+        let started = Instant::now();
+        let returned = runtime_status(&profile, &processes, &stopping, &logs);
+        assert!(started.elapsed() < Duration::from_millis(300));
+        assert_eq!(returned.state, "starting");
+        assert_eq!(returned.player_count, 0);
+        assert!(returned.online_players.is_empty());
+
+        let guard = processes.lock().unwrap();
+        let process = guard.get(&profile.id).unwrap();
+        assert!(process.status_probe_in_flight);
+        assert!(process.cached_status.is_none());
+        assert!(process.last_status_probe.is_none());
+        assert_eq!(process.online_players_log_index, 0);
+        drop(guard);
+        cleanup.stop();
     }
 
     #[test]
@@ -1019,6 +1216,115 @@ mod tests {
                 true
             ),
             Some(("Xbox Friend".into(), false))
+        );
+    }
+
+    #[test]
+    fn online_player_log_scan_advances_incrementally() {
+        let logs = LogMap::default();
+        logs.lock().unwrap().insert(
+            "server-a".into(),
+            vec![
+                LogEntry {
+                    timestamp: "00:00:00".into(),
+                    level: "INFO".into(),
+                    message: "Steve joined the game".into(),
+                },
+                LogEntry {
+                    timestamp: "00:00:01".into(),
+                    level: "INFO".into(),
+                    message: "Alex joined the game".into(),
+                },
+            ],
+        );
+        let mut online = BTreeMap::new();
+        let (cursor, anchor) =
+            update_online_players_from_logs(&logs, "server-a", 0, None, false, &mut online);
+        assert_eq!(cursor, 2);
+        assert_eq!(
+            online.keys().cloned().collect::<Vec<_>>(),
+            vec!["alex".to_string(), "steve".to_string()]
+        );
+
+        logs.lock()
+            .unwrap()
+            .get_mut("server-a")
+            .unwrap()
+            .push(LogEntry {
+                timestamp: "00:00:02".into(),
+                level: "INFO".into(),
+                message: "Steve left the game".into(),
+            });
+        let (next_cursor, _) =
+            update_online_players_from_logs(&logs, "server-a", cursor, anchor, false, &mut online);
+        assert_eq!(next_cursor, 3);
+        assert_eq!(
+            online.keys().cloned().collect::<Vec<_>>(),
+            vec!["alex".to_string()]
+        );
+    }
+
+    #[test]
+    fn online_player_log_scan_rebuilds_when_the_bounded_log_rotates() {
+        let logs = LogMap::default();
+        logs.lock().unwrap().insert(
+            "server-a".into(),
+            vec![
+                LogEntry {
+                    timestamp: "00:00:00".into(),
+                    level: "INFO".into(),
+                    message: "OldPlayer joined the game".into(),
+                },
+                LogEntry {
+                    timestamp: "00:00:01".into(),
+                    level: "INFO".into(),
+                    message: "OldPlayer left the game".into(),
+                },
+                LogEntry {
+                    timestamp: "00:00:02".into(),
+                    level: "INFO".into(),
+                    message: "AnchorPlayer joined the game".into(),
+                },
+            ],
+        );
+        let mut online = BTreeMap::new();
+        let (cursor, anchor) =
+            update_online_players_from_logs(&logs, "server-a", 0, None, false, &mut online);
+        assert_eq!(
+            online.keys().cloned().collect::<Vec<_>>(),
+            vec!["anchorplayer"]
+        );
+
+        // Simulate the bounded reader draining exactly as many entries as were
+        // added between probes: the vector length alone is unchanged, but the
+        // anchor at cursor-1 is now different.
+        {
+            let mut guard = logs.lock().unwrap();
+            let entries = guard.get_mut("server-a").unwrap();
+            entries.drain(..3);
+            entries.extend([
+                LogEntry {
+                    timestamp: "00:00:03".into(),
+                    level: "INFO".into(),
+                    message: "NewPlayer joined the game".into(),
+                },
+                LogEntry {
+                    timestamp: "00:00:04".into(),
+                    level: "INFO".into(),
+                    message: "NewPlayer left the game".into(),
+                },
+                LogEntry {
+                    timestamp: "00:00:05".into(),
+                    level: "INFO".into(),
+                    message: "NewestPlayer joined the game".into(),
+                },
+            ]);
+        }
+        let (_, _) =
+            update_online_players_from_logs(&logs, "server-a", cursor, anchor, false, &mut online);
+        assert_eq!(
+            online.keys().cloned().collect::<Vec<_>>(),
+            vec!["newestplayer"]
         );
     }
 

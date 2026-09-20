@@ -986,69 +986,80 @@ async fn create_server(
 }
 
 #[tauri::command]
-fn start_server(
+async fn start_server(
     server_id: String,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> AppResult<()> {
-    let _operation = state.server_operations.blocking_lock(&server_id);
-    let store = state.store.lock().unwrap();
-    let profile = store.get_server(&server_id)?;
-    let servers = store.list_servers()?;
-    ensure_registered_port_unique(
-        &servers,
-        Some(&server_id),
-        profile.port,
-        profile.network_transport(),
-        profile.server_type == "bedrock",
-    )?;
-    if profile.game_adapter().is_palworld() {
-        let settings = profile
-            .palworld_settings
-            .as_ref()
-            .ok_or_else(|| AppError::Validation("PalworldのREST管理設定がありません".into()))?;
-        ensure_palworld_management_port_unique(&servers, Some(&server_id), settings.rest_api_port)?;
-        let game_port_probe = UdpSocket::bind(("0.0.0.0", profile.port)).map_err(|_| {
-            AppError::Validation(format!(
-                "Palworldゲーム用UDPポート {} は別のプロセスが使用中です",
-                profile.port
-            ))
-        })?;
-        let rest_port_probe =
-            TcpListener::bind(("0.0.0.0", settings.rest_api_port)).map_err(|_| {
+    let _operation = state.server_operations.lock(&server_id).await;
+    // All start-up preparation can touch the filesystem, inspect mods, probe
+    // ports, verify executables, and spawn a child process. Run the complete
+    // blocking section on Tokio's blocking pool while retaining the per-server
+    // operation guard for the whole transaction.
+    let store = state.store.clone();
+    let processes = state.processes.clone();
+    let stopping_servers = state.stopping_servers.clone();
+    let logs = state.logs.clone();
+    let audit_dir = state.audit_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let store_guard = store.lock().unwrap();
+        let profile = store_guard.get_server(&server_id)?;
+        let servers = store_guard.list_servers()?;
+        ensure_registered_port_unique(
+            &servers,
+            Some(&server_id),
+            profile.port,
+            profile.network_transport(),
+            profile.server_type == "bedrock",
+        )?;
+        if profile.game_adapter().is_palworld() {
+            let settings = profile
+                .palworld_settings
+                .as_ref()
+                .ok_or_else(|| AppError::Validation("PalworldのREST管理設定がありません".into()))?;
+            ensure_palworld_management_port_unique(
+                &servers,
+                Some(&server_id),
+                settings.rest_api_port,
+            )?;
+            let game_port_probe = UdpSocket::bind(("0.0.0.0", profile.port)).map_err(|_| {
                 AppError::Validation(format!(
-                    "Palworld REST管理用TCPポート {} は別のプロセスが使用中です",
-                    settings.rest_api_port
+                    "Palworldゲーム用UDPポート {} は別のプロセスが使用中です",
+                    profile.port
                 ))
             })?;
-        drop((game_port_probe, rest_port_probe));
-        let _ = credentials::load_palworld_admin_password(&profile.id)?;
-        palworld::validate_server_layout(Path::new(&profile.root_path))?;
-    }
-    drop(store);
-    if !profile.game_adapter().is_palworld() {
-        enforce_start_preflight(&profile)?;
-        enforce_extension_preflight(&profile)?;
-    }
-    process::start(
-        &app,
-        &profile,
-        &state.processes,
-        &state.stopping_servers,
-        &state.logs,
-    )?;
-    let _ = append_audit(
-        &state.audit_dir,
-        &server_id,
-        "local-host",
-        "server.start",
-        &format!(
-            "source=desktop edition={} runtime={}",
-            profile.edition(),
-            profile.runtime_kind()
-        ),
-    );
-    Ok(())
+            let rest_port_probe =
+                TcpListener::bind(("0.0.0.0", settings.rest_api_port)).map_err(|_| {
+                    AppError::Validation(format!(
+                        "Palworld REST管理用TCPポート {} は別のプロセスが使用中です",
+                        settings.rest_api_port
+                    ))
+                })?;
+            drop((game_port_probe, rest_port_probe));
+            let _ = credentials::load_palworld_admin_password(&profile.id)?;
+            palworld::validate_server_layout(Path::new(&profile.root_path))?;
+        }
+        drop(store_guard);
+        if !profile.game_adapter().is_palworld() {
+            enforce_start_preflight(&profile)?;
+            enforce_extension_preflight(&profile)?;
+        }
+        process::start(&app, &profile, &processes, &stopping_servers, &logs)?;
+        let _ = append_audit(
+            &audit_dir,
+            &server_id,
+            "local-host",
+            "server.start",
+            &format!(
+                "source=desktop edition={} runtime={}",
+                profile.edition(),
+                profile.runtime_kind()
+            ),
+        );
+        Ok(())
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("サーバー起動処理に失敗しました: {error}")))?
 }
 
 #[tauri::command]
@@ -1229,59 +1240,62 @@ async fn restart_server(
             &format!("server={server_id}"),
         );
     }
-    let store = state.store.lock().unwrap();
-    let profile = store.get_server(&server_id)?;
-    let servers = store.list_servers()?;
-    ensure_registered_port_unique(
-        &servers,
-        Some(&server_id),
-        profile.port,
-        profile.network_transport(),
-        profile.server_type == "bedrock",
-    )?;
-    if profile.game_adapter().is_palworld() {
-        let rest_port = profile
-            .palworld_settings
-            .as_ref()
-            .ok_or_else(|| AppError::Validation("Palworld REST設定がありません".into()))?
-            .rest_api_port;
-        ensure_palworld_management_port_unique(&servers, Some(&server_id), rest_port)?;
-        let game_port_probe = UdpSocket::bind(("0.0.0.0", profile.port)).map_err(|_| {
-            AppError::Validation(format!(
-                "Palworldゲーム用UDPポート {} は別のプロセスが使用中です",
-                profile.port
-            ))
-        })?;
-        let rest_port_probe = TcpListener::bind(("0.0.0.0", rest_port)).map_err(|_| {
-            AppError::Validation(format!(
-                "Palworld REST管理用TCPポート {rest_port} は別のプロセスが使用中です"
-            ))
-        })?;
-        drop((game_port_probe, rest_port_probe));
-    }
-    drop(store);
-    if !profile.game_adapter().is_palworld() {
-        enforce_start_preflight(&profile)?;
-        enforce_extension_preflight(&profile)?;
-    } else {
-        let _ = credentials::load_palworld_admin_password(&profile.id)?;
-        palworld::validate_server_layout(Path::new(&profile.root_path))?;
-    }
-    process::start(
-        &app,
-        &profile,
-        &state.processes,
-        &state.stopping_servers,
-        &state.logs,
-    )?;
-    let _ = append_audit(
-        &state.audit_dir,
-        &server_id,
-        "local-host",
-        "server.restart",
-        "source=desktop",
-    );
-    Ok(())
+    let store = state.store.clone();
+    let processes = state.processes.clone();
+    let stopping_servers = state.stopping_servers.clone();
+    let logs = state.logs.clone();
+    let audit_dir = state.audit_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let store_guard = store.lock().unwrap();
+        let profile = store_guard.get_server(&server_id)?;
+        let servers = store_guard.list_servers()?;
+        ensure_registered_port_unique(
+            &servers,
+            Some(&server_id),
+            profile.port,
+            profile.network_transport(),
+            profile.server_type == "bedrock",
+        )?;
+        if profile.game_adapter().is_palworld() {
+            let rest_port = profile
+                .palworld_settings
+                .as_ref()
+                .ok_or_else(|| AppError::Validation("Palworld REST設定がありません".into()))?
+                .rest_api_port;
+            ensure_palworld_management_port_unique(&servers, Some(&server_id), rest_port)?;
+            let game_port_probe = UdpSocket::bind(("0.0.0.0", profile.port)).map_err(|_| {
+                AppError::Validation(format!(
+                    "Palworldゲーム用UDPポート {} は別のプロセスが使用中です",
+                    profile.port
+                ))
+            })?;
+            let rest_port_probe = TcpListener::bind(("0.0.0.0", rest_port)).map_err(|_| {
+                AppError::Validation(format!(
+                    "Palworld REST管理用TCPポート {rest_port} は別のプロセスが使用中です"
+                ))
+            })?;
+            drop((game_port_probe, rest_port_probe));
+        }
+        drop(store_guard);
+        if !profile.game_adapter().is_palworld() {
+            enforce_start_preflight(&profile)?;
+            enforce_extension_preflight(&profile)?;
+        } else {
+            let _ = credentials::load_palworld_admin_password(&profile.id)?;
+            palworld::validate_server_layout(Path::new(&profile.root_path))?;
+        }
+        process::start(&app, &profile, &processes, &stopping_servers, &logs)?;
+        let _ = append_audit(
+            &audit_dir,
+            &server_id,
+            "local-host",
+            "server.restart",
+            "source=desktop",
+        );
+        Ok(())
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("サーバー再起動処理に失敗しました: {error}")))?
 }
 
 fn enforce_start_preflight(profile: &ServerProfile) -> AppResult<()> {
@@ -1504,12 +1518,18 @@ async fn get_runtime_status(
     state: State<'_, AppState>,
 ) -> AppResult<RuntimeStatus> {
     let profile = state.store.lock().unwrap().get_server(&server_id)?;
-    let mut runtime = process::runtime_status(
-        &profile,
-        &state.processes,
-        &state.stopping_servers,
-        &state.logs,
-    );
+    // Runtime status includes local TCP/UDP probes and sysinfo process
+    // refreshes. Keep that work off Tauri's async executor so a slow or
+    // starting Minecraft process cannot stall unrelated commands or UI input.
+    let status_profile = profile.clone();
+    let processes = state.processes.clone();
+    let stopping_servers = state.stopping_servers.clone();
+    let logs = state.logs.clone();
+    let mut runtime = tokio::task::spawn_blocking(move || {
+        process::runtime_status(&status_profile, &processes, &stopping_servers, &logs)
+    })
+    .await
+    .map_err(|error| AppError::Other(format!("ランタイム状態の取得に失敗しました: {error}")))?;
     if profile.game_adapter().is_palworld()
         && matches!(runtime.state.as_str(), "starting" | "running")
     {
@@ -4485,28 +4505,37 @@ fn start_server_automation_monitor(app: tauri::AppHandle) {
             tokio::time::sleep(Duration::from_secs(10)).await;
             let snapshots = {
                 let state = app.state::<AppState>();
-                let profiles = match state.store.lock().unwrap().list_servers() {
-                    Ok(value) => value,
-                    Err(_) => continue,
-                };
-                profiles
-                    .into_iter()
-                    .filter_map(|profile| {
-                        let settings = state
-                            .store
-                            .lock()
-                            .unwrap()
-                            .automation_settings(&profile.id)
-                            .ok()?;
-                        let status = process::runtime_status(
-                            &profile,
-                            &state.processes,
-                            &state.stopping_servers,
-                            &state.logs,
-                        );
-                        Some((profile, settings, status))
-                    })
-                    .collect::<Vec<_>>()
+                let store = state.store.clone();
+                let processes = state.processes.clone();
+                let stopping_servers = state.stopping_servers.clone();
+                let logs = state.logs.clone();
+                match tokio::task::spawn_blocking(move || {
+                    let profiles = store.lock().unwrap().list_servers()?;
+                    Ok::<_, AppError>(
+                        profiles
+                            .into_iter()
+                            .filter_map(|profile| {
+                                let settings = store
+                                    .lock()
+                                    .unwrap()
+                                    .automation_settings(&profile.id)
+                                    .ok()?;
+                                let status = process::runtime_status(
+                                    &profile,
+                                    &processes,
+                                    &stopping_servers,
+                                    &logs,
+                                );
+                                Some((profile, settings, status))
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .await
+                {
+                    Ok(Ok(value)) => value,
+                    Ok(Err(_)) | Err(_) => continue,
+                }
             };
             for (profile, settings, mut status) in snapshots {
                 if profile.game_adapter().is_palworld()
