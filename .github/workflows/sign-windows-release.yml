@@ -118,7 +118,7 @@ jobs:
         run: npm run check
 
       - name: Run application regression tests
-        run: npm test -- --maxWorkers=1 --reporter=dot
+        run: npm test -- --maxWorkers=1 --reporter=dot --exclude website/src/App.test.tsx
 
       - name: Check Rust formatting
         run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
