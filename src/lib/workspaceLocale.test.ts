@@ -13,16 +13,17 @@ describe("workspace release announcements", () => {
       const announcements = workspaceAnnouncements(locale);
       expect(announcements).toHaveLength(3);
       expect(announcements[0].title).toContain(packageMetadata.version);
-      expect(announcements[0].date).toBe("2026-09-20");
+      expect(announcements[0].date).toBe("2026-09-21");
       expect(new Set(announcements.map((item) => item.id)).size).toBe(announcements.length);
       expect(announcements.every((item) => item.body.trim().length > 0)).toBe(true);
     }
   });
 
-  it("describes the current performance, BAN, and Forge Mod releases in Japanese", () => {
+  it("describes the current performance, polling, and console improvements in Japanese", () => {
     const announcements = workspaceAnnouncements("ja");
-    expect(announcements[0].body).toContain("ニュース更新を必須");
-    expect(announcements[0].body).toContain("約26%小さく");
+    expect(announcements[0].body).toContain("同じログの再比較を省略");
+    expect(announcements[0].body).toContain("画面外の背景サーバー監視を停止");
+    expect(announcements[0].body).toContain("ログ行とサーバーカードの再描画を抑制");
     expect(announcements[1].body).toContain("状態探査の重複");
     expect(announcements[2].body).toContain("BAN処理を修正");
   });

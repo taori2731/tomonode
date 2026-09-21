@@ -50,4 +50,21 @@ describe("console log performance safeguards", () => {
     expect(onClear).toHaveBeenCalledTimes(1);
     expect(onCommand).toHaveBeenCalledWith("list");
   });
+
+  it("keeps an unchanged visible row mounted when a new log arrives", () => {
+    const { rerender } = render(<ConsoleTab logs={logEntries(CONSOLE_DISPLAY_LIMIT)} running onClear={vi.fn()} onCopy={vi.fn()} onSave={vi.fn()} onCommand={vi.fn().mockResolvedValue(undefined)} />);
+    const stableRow = screen.getByText("line-499").parentElement;
+
+    rerender(<ConsoleTab logs={[...logEntries(CONSOLE_DISPLAY_LIMIT), { timestamp: "12:01:00", level: "INFO", message: "line-500" }]} running onClear={vi.fn()} onCopy={vi.fn()} onSave={vi.fn()} onCommand={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(screen.getByText("line-499").parentElement).toBe(stableRow);
+  });
+
+  it.each([1_000, 5_000])("keeps the console DOM bounded at %s incoming log entries", (count) => {
+    const { unmount } = render(<ConsoleTab logs={logEntries(count)} running onClear={vi.fn()} onCopy={vi.fn()} onSave={vi.fn()} onCommand={vi.fn().mockResolvedValue(undefined)} />);
+
+    expect(screen.getByRole("log").querySelectorAll(":scope > div")).toHaveLength(CONSOLE_DISPLAY_LIMIT);
+    expect(screen.getByRole("log")).toHaveTextContent(`line-${count - 1}`);
+    unmount();
+  });
 });

@@ -6,6 +6,10 @@ export function isServerWorkspaceVisible(section: AppSection) {
   return section === "home" || section === "players";
 }
 
+export function shouldPollBackgroundStatuses(section: AppSection, backgroundServerCount: number) {
+  return backgroundServerCount > 0 && isServerWorkspaceVisible(section);
+}
+
 export function selectedStatusPollInterval(state: ServerState, section: AppSection) {
   if (!isServerWorkspaceVisible(section)) return 10_000;
   if (state === "starting" || state === "stopping" || state === "restarting") return 1_000;

@@ -2,7 +2,7 @@ import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRe
 import { Icon } from "./components/Icon";
 import { OverviewTab } from "./components/OverviewTab";
 import { OperationOverlay } from "./components/OperationOverlay";
-import { monitoringWarnings, readMonitoring } from "./components/ProOperationsPanel";
+import { monitoringWarnings, readMonitoring } from "./lib/monitoring";
 import { ServerHeader } from "./components/ServerHeader";
 import { HomeHub } from "./components/HomeHub";
 import { DiscoverPage, GlobalSearch, NewsPage, ServerDirectoryPage, TemplatesPage } from "./components/HubPages";
@@ -19,7 +19,9 @@ import { workspaceText } from "./lib/workspaceLocale";
 import { homeText } from "./lib/homeLocale";
 import { brand, formatNotificationTitle } from "./lib/brand";
 import { rebrandText } from "./lib/rebrandLocale";
-import { BACKGROUND_STATUS_POLL_INTERVAL_MS, isServerWorkspaceVisible, selectedLogPollInterval, selectedStatusPollInterval } from "./lib/pollingPolicy";
+import { BACKGROUND_STATUS_POLL_INTERVAL_MS, isServerWorkspaceVisible, selectedLogPollInterval, selectedStatusPollInterval, shouldPollBackgroundStatuses } from "./lib/pollingPolicy";
+import { sameLogSnapshot } from "./lib/logs";
+import { sameRuntimeStatus } from "./lib/runtimeStatus";
 import { MigrationNoticeDialog } from "./components/MigrationNoticeDialog";
 import type { AppSection, AppearanceSettings, DeleteServerResult, LogEntry, MonitoringSettings, RuntimeStatus, ServerProfile, TabId, ThemeMode } from "./types";
 
@@ -70,23 +72,6 @@ const stoppedStatus = (server?: ServerProfile): RuntimeStatus => ({
   tpsSupported: server?.serverType === "paper" || server?.serverType === "vanilla",
   pingLatencyMs: null,
 });
-
-const sameStatus = (left?: RuntimeStatus, right?: RuntimeStatus) => Boolean(left && right
-  && left.state === right.state
-  && left.playerCount === right.playerCount
-  && left.maxPlayers === right.maxPlayers
-  && (left.onlinePlayers ?? []).join("\0") === (right.onlinePlayers ?? []).join("\0")
-  && left.memoryUsedMib === right.memoryUsedMib
-  && left.uptimeSeconds === right.uptimeSeconds
-  && left.address === right.address
-  && left.cpuPercent === right.cpuPercent
-  && left.tps === right.tps
-  && left.tpsSupported === right.tpsSupported
-  && left.pingLatencyMs === right.pingLatencyMs
-  && JSON.stringify(left.palworld ?? null) === JSON.stringify(right.palworld ?? null));
-
-const sameLogs = (left: LogEntry[], right: LogEntry[]) => left.length === right.length
-  && left.every((item, index) => item.timestamp === right[index]?.timestamp && item.level === right[index]?.level && item.message === right[index]?.message);
 
 export function createRefreshGuard(refresh: () => Promise<void>) {
   let inFlight = false;
@@ -208,7 +193,7 @@ export function AppContent() {
     const refresh = createRefreshGuard(async () => {
       if (!active || document.hidden) return;
       const next = await backend.status(selectedId);
-      if (active) startTransition(() => setStatuses((current) => sameStatus(current[selectedId], next) ? current : { ...current, [selectedId]: next }));
+      if (active) startTransition(() => setStatuses((current) => sameRuntimeStatus(current[selectedId], next) ? current : { ...current, [selectedId]: next }));
     });
     refresh().catch(() => undefined);
     const interval = selectedStatusPollInterval(selectedStatus.state, activeSection);
@@ -220,14 +205,14 @@ export function AppContent() {
 
   useEffect(() => {
     const background = servers.filter((server) => server.id !== selectedId);
-    if (background.length === 0) return;
+    if (!shouldPollBackgroundStatuses(activeSection, background.length)) return;
     let active = true;
     const refresh = createRefreshGuard(async () => {
       if (!active || document.hidden) return;
       const results = await Promise.all(background.map(async (server) => [server.id, await backend.status(server.id)] as const));
       if (!active) return;
       startTransition(() => setStatuses((current) => {
-        if (results.every(([id, status]) => sameStatus(current[id], status))) return current;
+        if (results.every(([id, status]) => sameRuntimeStatus(current[id], status))) return current;
         return { ...current, ...Object.fromEntries(results) };
       }));
     });
@@ -236,7 +221,7 @@ export function AppContent() {
     const onVisibilityChange = () => { if (!document.hidden) refresh().catch(() => undefined); };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => { active = false; window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisibilityChange); };
-  }, [servers, selectedId]);
+  }, [activeSection, servers, selectedId]);
 
   useEffect(() => {
     if (!selectedId) { setLogs([]); return; }
@@ -246,7 +231,7 @@ export function AppContent() {
     const refresh = createRefreshGuard(async () => {
       if (!active || document.hidden) return;
       const entries = await backend.logs(selectedId);
-      if (active) startTransition(() => setLogs((current) => sameLogs(current, entries) ? current : entries));
+      if (active) startTransition(() => setLogs((current) => sameLogSnapshot(current, entries) ? current : entries));
     });
     refresh().catch(() => undefined);
     const timer = interval ? window.setInterval(refresh, interval) : undefined;

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import type { RuntimeStatus, ServerProfile, TabId } from "../types";
 import { useI18n } from "../lib/i18n";
 import { homeText } from "../lib/homeLocale";
@@ -22,6 +22,30 @@ interface Props {
   below?: ReactNode;
 }
 
+interface HomeServerCardProps {
+  server: ServerProfile;
+  status?: RuntimeStatus;
+  serverIcon?: string;
+  selected: boolean;
+  stateLabel: string;
+  onSelect: (id: string) => void;
+}
+
+const HomeServerCard = memo(function HomeServerCard({ server, status, serverIcon, selected, stateLabel, onSelect }: HomeServerCardProps) {
+  const state = status?.state ?? "stopped";
+  return <button className={`home-server-card${selected ? " selected" : ""}`} type="button" aria-pressed={selected} onClick={() => onSelect(server.id)}>
+    <div className={`home-server-cover ${server.serverType}`}><ServerIcon source={serverIcon} /><span className={`hero-status ${state}`}><i />{stateLabel}</span></div>
+    <div className="home-server-copy"><strong>{server.name}</strong><small>{serverTypeLabel[server.serverType]} · {getServerVersionLabel(server)}</small><span><Icon name="users" size={15} />{status ? `${status.playerCount} / ${status.maxPlayers}` : "—"}</span></div>
+  </button>;
+}, (previous, next) => previous.server === next.server
+  && previous.status?.state === next.status?.state
+  && previous.status?.playerCount === next.status?.playerCount
+  && previous.status?.maxPlayers === next.status?.maxPlayers
+  && previous.serverIcon === next.serverIcon
+  && previous.selected === next.selected
+  && previous.stateLabel === next.stateLabel
+  && previous.onSelect === next.onSelect);
+
 export function HomeHub({ servers, selected, statuses, serverIcons, onSelect, onCreate, onNavigate, onCopyAddress, children, below }: Props) {
   const { locale, t } = useI18n();
   const text = homeText(locale);
@@ -42,14 +66,7 @@ export function HomeHub({ servers, selected, statuses, serverIcons, onSelect, on
     <div className="home-main">
       <div className="home-banner"><div><h2>{text.title}</h2><p>{text.subtitle}</p><button className="primary-button" type="button" onClick={onCreate}><Icon name="add" />{t("newServer")}</button></div></div>
       <section className="home-servers"><header><h2>{text.servers}</h2><span>{servers.length}</span></header>
-        <div className="home-server-grid">{servers.map((server) => {
-          const status = statuses[server.id];
-          const state = status?.state ?? "stopped";
-          return <button className={`home-server-card${server.id === selected.id ? " selected" : ""}`} type="button" key={server.id} aria-pressed={server.id === selected.id} onClick={() => onSelect(server.id)}>
-            <div className={`home-server-cover ${server.serverType}`}><ServerIcon source={serverIcons[server.id]} /><span className={`hero-status ${state}`}><i />{stateLabels[state]}</span></div>
-            <div className="home-server-copy"><strong>{server.name}</strong><small>{serverTypeLabel[server.serverType]} · {getServerVersionLabel(server)}</small><span><Icon name="users" size={15} />{status ? `${status.playerCount} / ${status.maxPlayers}` : "—"}</span></div>
-          </button>;
-        })}<button type="button" className="home-server-add" onClick={onCreate}><Icon name="add" size={30} /><strong>{t("newServer")}</strong></button></div>
+        <div className="home-server-grid">{servers.map((server) => <HomeServerCard key={server.id} server={server} status={statuses[server.id]} serverIcon={serverIcons[server.id]} selected={server.id === selected.id} stateLabel={stateLabels[statuses[server.id]?.state ?? "stopped"]} onSelect={onSelect} />)}<button type="button" className="home-server-add" onClick={onCreate}><Icon name="add" size={30} /><strong>{t("newServer")}</strong></button></div>
       </section>
       {below}
     </div>

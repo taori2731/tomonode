@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useState } from "react";
+import { memo, useDeferredValue, useMemo, useState } from "react";
 import type { LogEntry } from "../types";
 import { Icon } from "./Icon";
 
@@ -15,12 +15,25 @@ interface Props {
 
 export const CONSOLE_DISPLAY_LIMIT = 500;
 
+const ConsoleLogRow = memo(function ConsoleLogRow({ entry }: { entry: LogEntry }) {
+  return <div data-no-translate><time>[{entry.timestamp}]</time><b className={entry.level.toLowerCase()}>[{entry.level}]</b><span>{entry.message}</span></div>;
+});
+
 export function ConsoleTab({ logs, running, onClear, onCopy, onSave, onCommand, commandsEnabled = true, commandUnavailableMessage }: Props) {
   const [query, setQuery] = useState("");
   const [command, setCommand] = useState("");
   const deferredQuery = useDeferredValue(query.toLowerCase());
   const matchingLogs = useMemo(() => logs.filter((entry) => `${entry.level} ${entry.message}`.toLowerCase().includes(deferredQuery)), [logs, deferredQuery]);
   const visibleLogs = useMemo(() => matchingLogs.slice(-CONSOLE_DISPLAY_LIMIT), [matchingLogs]);
+  const visibleLogsWithKeys = useMemo(() => {
+    const occurrences = new Map<string, number>();
+    return visibleLogs.map((entry) => {
+      const identity = `${entry.timestamp}\u0000${entry.level}\u0000${entry.message}`;
+      const occurrence = occurrences.get(identity) ?? 0;
+      occurrences.set(identity, occurrence + 1);
+      return { entry, key: `${identity}\u0000${occurrence}` };
+    });
+  }, [visibleLogs]);
   const hiddenLogCount = matchingLogs.length - visibleLogs.length;
 
   const submit = async (event: React.FormEvent) => {
@@ -47,7 +60,7 @@ export function ConsoleTab({ logs, running, onClear, onCopy, onSave, onCommand, 
         </header>
         {hiddenLogCount > 0 ? <p className="console-limit-note" role="note">表示は最新{CONSOLE_DISPLAY_LIMIT}件まで（検索結果{matchingLogs.length}件中）。コピーも表示中の範囲です。</p> : null}
         <div className="console-log" role="log" aria-live="polite">
-          {visibleLogs.map((entry, index) => <div data-no-translate key={`${entry.timestamp}-${index}`}><time>[{entry.timestamp}]</time><b className={entry.level.toLowerCase()}>[{entry.level}]</b><span>{entry.message}</span></div>)}
+          {visibleLogsWithKeys.map(({ entry, key }) => <ConsoleLogRow entry={entry} key={key} />)}
           {visibleLogs.length === 0 ? <p className="empty-log">一致するログはありません。</p> : null}
         </div>
         {commandsEnabled ? <form className="command-line" onSubmit={submit}>
