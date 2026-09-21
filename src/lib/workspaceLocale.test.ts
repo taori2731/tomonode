@@ -19,12 +19,12 @@ describe("workspace release announcements", () => {
     }
   });
 
-  it("describes the current performance, polling, and console improvements in Japanese", () => {
+  it("describes the current console-history and performance improvements in Japanese", () => {
     const announcements = workspaceAnnouncements("ja");
+    expect(announcements[0].body).toContain("固定行数上限をなくし");
     expect(announcements[0].body).toContain("同じログの再比較を省略");
-    expect(announcements[0].body).toContain("画面外の背景サーバー監視を停止");
-    expect(announcements[0].body).toContain("ログ行とサーバーカードの再描画を抑制");
-    expect(announcements[1].body).toContain("状態探査の重複");
+    expect(announcements[0].body).toContain("ログ行とサーバーカードの再描画も抑制");
+    expect(announcements[1].body).toContain("画面外の背景サーバー監視を停止");
     expect(announcements[2].body).toContain("BAN処理を修正");
   });
 });

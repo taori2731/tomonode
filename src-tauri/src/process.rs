@@ -665,9 +665,9 @@ fn update_online_players_from_logs(
     let Some(entries) = guard.get(server_id) else {
         return (start, expected_anchor);
     };
-    // The log reader keeps a bounded tail and periodically drains old entries.
-    // If that happened since the previous probe, rebuild from the retained tail
-    // so a stale cursor cannot silently miss a leave event.
+    // Log history is append-only while a server is running. Keep the anchor
+    // guard as a defensive check for a clear/restart or any future replacement
+    // of the in-memory history.
     let cursor_anchor_changed = start > 0
         && expected_anchor.is_some()
         && entries
@@ -829,6 +829,14 @@ fn parse_tps(line: &str) -> Option<f32> {
         .then(|| (1_000.0 / milliseconds).clamp(0.0, 20.0))
 }
 
+fn append_log_entry(logs: &LogMap, server_id: &str, entry: LogEntry) {
+    let mut all_logs = logs.lock().unwrap();
+    all_logs
+        .entry(server_id.to_string())
+        .or_default()
+        .push(entry);
+}
+
 fn spawn_log_reader<R: std::io::Read + Send + 'static>(
     server_id: String,
     reader: R,
@@ -843,14 +851,7 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
                 level,
                 message: line,
             };
-            {
-                let mut all_logs = logs.lock().unwrap();
-                let server_logs = all_logs.entry(server_id.clone()).or_default();
-                server_logs.push(entry);
-                if server_logs.len() > 5_000 {
-                    server_logs.drain(..500);
-                }
-            }
+            append_log_entry(&logs, &server_id, entry);
         }
     });
 }
@@ -938,9 +939,9 @@ fn close_job(job_handle: isize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        LogMap, ManagedProcess, ProcessMap, StoppingMap, bedrock_executable, begin_stop, is_busy,
-        is_running, is_stopping, parse_tps, player_presence_event, runtime_status,
-        update_online_players_from_logs, verified_bedrock_executable,
+        LogMap, ManagedProcess, ProcessMap, StoppingMap, append_log_entry, bedrock_executable,
+        begin_stop, is_busy, is_running, is_stopping, parse_tps, player_presence_event,
+        runtime_status, update_online_players_from_logs, verified_bedrock_executable,
     };
     use crate::models::{BasicSettings, LogEntry, RuntimeStatus, ServerProfile};
     use std::{
@@ -986,6 +987,27 @@ mod tests {
         );
         assert_eq!(parse_tps("Average tick time: 62.5 ms"), Some(16.0));
         assert_eq!(parse_tps("Time elapsed: 2156 ms"), None);
+    }
+
+    #[test]
+    fn console_log_history_keeps_all_appended_entries_without_a_retention_cap() {
+        let logs = LogMap::default();
+        for index in 0..5_001 {
+            append_log_entry(
+                &logs,
+                "server-a",
+                LogEntry {
+                    timestamp: "00:00:00".into(),
+                    level: "INFO".into(),
+                    message: format!("line-{index}"),
+                },
+            );
+        }
+        let guard = logs.lock().unwrap();
+        let entries = guard.get("server-a").unwrap();
+        assert_eq!(entries.len(), 5_001);
+        assert_eq!(entries.first().unwrap().message, "line-0");
+        assert_eq!(entries.last().unwrap().message, "line-5000");
     }
 
     #[test]
@@ -1265,7 +1287,7 @@ mod tests {
     }
 
     #[test]
-    fn online_player_log_scan_rebuilds_when_the_bounded_log_rotates() {
+    fn online_player_log_scan_rebuilds_when_log_history_is_replaced() {
         let logs = LogMap::default();
         logs.lock().unwrap().insert(
             "server-a".into(),
@@ -1295,9 +1317,8 @@ mod tests {
             vec!["anchorplayer"]
         );
 
-        // Simulate the bounded reader draining exactly as many entries as were
-        // added between probes: the vector length alone is unchanged, but the
-        // anchor at cursor-1 is now different.
+        // Simulate a history replacement such as a clear/restart: the vector
+        // length alone is unchanged, but the anchor at cursor-1 is different.
         {
             let mut guard = logs.lock().unwrap();
             let entries = guard.get_mut("server-a").unwrap();

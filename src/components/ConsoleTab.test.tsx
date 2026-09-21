@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { LogEntry } from "../types";
-import { CONSOLE_DISPLAY_LIMIT, ConsoleTab } from "./ConsoleTab";
+import { ConsoleTab } from "./ConsoleTab";
 
 function logEntries(count: number): LogEntry[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -12,24 +12,23 @@ function logEntries(count: number): LogEntry[] {
 }
 
 describe("console log performance safeguards", () => {
-  it("renders only the newest bounded log window and copies that visible window on demand", () => {
+  it("renders and copies the complete matching log history without an artificial line limit", () => {
     const onCopy = vi.fn();
-    const logs = logEntries(CONSOLE_DISPLAY_LIMIT + 200);
+    const logs = logEntries(700);
     render(<ConsoleTab logs={logs} running onClear={vi.fn()} onCopy={onCopy} onSave={vi.fn()} onCommand={vi.fn().mockResolvedValue(undefined)} />);
 
-    expect(screen.getAllByRole("log")[0].querySelectorAll(":scope > div")).toHaveLength(CONSOLE_DISPLAY_LIMIT);
-    expect(screen.getByRole("note")).toHaveTextContent(`表示は最新${CONSOLE_DISPLAY_LIMIT}件まで`);
+    expect(screen.getByRole("log").querySelectorAll(":scope > div")).toHaveLength(logs.length);
+    expect(screen.getByRole("log")).toHaveTextContent("line-0");
     expect(screen.getByRole("log")).toHaveTextContent("line-699");
-    expect(screen.getByRole("log")).not.toHaveTextContent("line-0");
     expect(onCopy).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "コピー" }));
 
     expect(onCopy).toHaveBeenCalledTimes(1);
     const copied = onCopy.mock.calls[0][0] as string;
-    expect(copied.split("\n")).toHaveLength(CONSOLE_DISPLAY_LIMIT);
+    expect(copied.split("\n")).toHaveLength(logs.length);
     expect(copied).toContain("line-699");
-    expect(copied).not.toContain("line-0");
+    expect(copied).toContain("line-0");
   });
 
   it("keeps search, save, clear, and command actions available", () => {
@@ -52,18 +51,19 @@ describe("console log performance safeguards", () => {
   });
 
   it("keeps an unchanged visible row mounted when a new log arrives", () => {
-    const { rerender } = render(<ConsoleTab logs={logEntries(CONSOLE_DISPLAY_LIMIT)} running onClear={vi.fn()} onCopy={vi.fn()} onSave={vi.fn()} onCommand={vi.fn().mockResolvedValue(undefined)} />);
+    const { rerender } = render(<ConsoleTab logs={logEntries(500)} running onClear={vi.fn()} onCopy={vi.fn()} onSave={vi.fn()} onCommand={vi.fn().mockResolvedValue(undefined)} />);
     const stableRow = screen.getByText("line-499").parentElement;
 
-    rerender(<ConsoleTab logs={[...logEntries(CONSOLE_DISPLAY_LIMIT), { timestamp: "12:01:00", level: "INFO", message: "line-500" }]} running onClear={vi.fn()} onCopy={vi.fn()} onSave={vi.fn()} onCommand={vi.fn().mockResolvedValue(undefined)} />);
+    rerender(<ConsoleTab logs={[...logEntries(500), { timestamp: "12:01:00", level: "INFO", message: "line-500" }]} running onClear={vi.fn()} onCopy={vi.fn()} onSave={vi.fn()} onCommand={vi.fn().mockResolvedValue(undefined)} />);
 
     expect(screen.getByText("line-499").parentElement).toBe(stableRow);
   });
 
-  it.each([1_000, 5_000])("keeps the console DOM bounded at %s incoming log entries", (count) => {
+  it.each([1_000, 5_000])("keeps all %s incoming log entries available to the console", (count) => {
     const { unmount } = render(<ConsoleTab logs={logEntries(count)} running onClear={vi.fn()} onCopy={vi.fn()} onSave={vi.fn()} onCommand={vi.fn().mockResolvedValue(undefined)} />);
 
-    expect(screen.getByRole("log").querySelectorAll(":scope > div")).toHaveLength(CONSOLE_DISPLAY_LIMIT);
+    expect(screen.getByRole("log").querySelectorAll(":scope > div")).toHaveLength(count);
+    expect(screen.getByRole("log")).toHaveTextContent("line-0");
     expect(screen.getByRole("log")).toHaveTextContent(`line-${count - 1}`);
     unmount();
   });

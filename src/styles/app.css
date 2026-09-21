@@ -235,7 +235,6 @@ a { color: var(--accent); }
 .console-log { height: calc(100vh - 72px - 226px - 72px - 48px - 138px); min-height: 280px; overflow: auto; padding: 18px; background: color-mix(in srgb, var(--bg) 84%, black); font: 13px/1.8 "Cascadia Mono", Consolas, monospace; }
 .console-log > div { display: grid; grid-template-columns: 90px 72px minmax(0, 1fr); gap: 6px; content-visibility: auto; contain-intrinsic-size: 24px; }
 .console-log time { color: var(--faint); }
-.console-limit-note { margin: 0; padding: 7px 15px; color: var(--muted); background: color-mix(in srgb, var(--accent) 6%, var(--surface)); border-bottom: 1px solid var(--border-subtle); font-size: 11px; line-height: 1.45; }
 .command-line { min-height: 66px; padding: 10px 14px; display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--border); }
 .command-line > span { color: var(--accent); font: 24px "Cascadia Mono", monospace; }
 .command-line input { flex: 1; min-width: 0; height: 42px; border: 0; outline: 0; background: transparent; color: var(--text); font-family: "Cascadia Mono", Consolas, monospace; }

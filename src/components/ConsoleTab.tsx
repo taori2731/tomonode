@@ -13,8 +13,6 @@ interface Props {
   commandUnavailableMessage?: string;
 }
 
-export const CONSOLE_DISPLAY_LIMIT = 500;
-
 const ConsoleLogRow = memo(function ConsoleLogRow({ entry }: { entry: LogEntry }) {
   return <div data-no-translate><time>[{entry.timestamp}]</time><b className={entry.level.toLowerCase()}>[{entry.level}]</b><span>{entry.message}</span></div>;
 });
@@ -24,17 +22,15 @@ export function ConsoleTab({ logs, running, onClear, onCopy, onSave, onCommand, 
   const [command, setCommand] = useState("");
   const deferredQuery = useDeferredValue(query.toLowerCase());
   const matchingLogs = useMemo(() => logs.filter((entry) => `${entry.level} ${entry.message}`.toLowerCase().includes(deferredQuery)), [logs, deferredQuery]);
-  const visibleLogs = useMemo(() => matchingLogs.slice(-CONSOLE_DISPLAY_LIMIT), [matchingLogs]);
-  const visibleLogsWithKeys = useMemo(() => {
+  const matchingLogsWithKeys = useMemo(() => {
     const occurrences = new Map<string, number>();
-    return visibleLogs.map((entry) => {
+    return matchingLogs.map((entry) => {
       const identity = `${entry.timestamp}\u0000${entry.level}\u0000${entry.message}`;
       const occurrence = occurrences.get(identity) ?? 0;
       occurrences.set(identity, occurrence + 1);
       return { entry, key: `${identity}\u0000${occurrence}` };
     });
-  }, [visibleLogs]);
-  const hiddenLogCount = matchingLogs.length - visibleLogs.length;
+  }, [matchingLogs]);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -45,7 +41,7 @@ export function ConsoleTab({ logs, running, onClear, onCopy, onSave, onCommand, 
   };
 
   const copyVisibleLogs = () => {
-    const text = visibleLogs.map((entry) => `[${entry.timestamp}] [${entry.level}] ${entry.message}`).join("\n");
+    const text = matchingLogs.map((entry) => `[${entry.timestamp}] [${entry.level}] ${entry.message}`).join("\n");
     onCopy(text);
   };
   return (
@@ -58,10 +54,9 @@ export function ConsoleTab({ logs, running, onClear, onCopy, onSave, onCommand, 
           <button className="small-button" type="button" onClick={onSave}><Icon name="download" size={17} />保存</button>
           <button className="small-button" type="button" onClick={onClear}><Icon name="trash" size={17} />クリア</button>
         </header>
-        {hiddenLogCount > 0 ? <p className="console-limit-note" role="note">表示は最新{CONSOLE_DISPLAY_LIMIT}件まで（検索結果{matchingLogs.length}件中）。コピーも表示中の範囲です。</p> : null}
         <div className="console-log" role="log" aria-live="polite">
-          {visibleLogsWithKeys.map(({ entry, key }) => <ConsoleLogRow entry={entry} key={key} />)}
-          {visibleLogs.length === 0 ? <p className="empty-log">一致するログはありません。</p> : null}
+          {matchingLogsWithKeys.map(({ entry, key }) => <ConsoleLogRow entry={entry} key={key} />)}
+          {matchingLogs.length === 0 ? <p className="empty-log">一致するログはありません。</p> : null}
         </div>
         {commandsEnabled ? <form className="command-line" onSubmit={submit}>
           <span aria-hidden="true">›</span>
