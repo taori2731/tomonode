@@ -679,6 +679,86 @@ a { color: var(--accent); }
 .extension-state.enabled { color: var(--accent); background: var(--accent-soft); }
 .installed-list em { color: var(--warning); font-size: 11px; font-style: normal; }
 .danger-icon { width: 36px; min-height: 36px; color: var(--danger); }
+.mod-management-panel { overflow: visible; }
+.mod-overview-card > header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.mod-overview-facts { padding: 0 18px 16px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.mod-overview-facts > div { padding: 10px; display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-soft); }
+.mod-overview-facts span { color: var(--muted); font-size: 10px; }
+.mod-management-header { align-items: flex-start !important; }
+.mod-management-header p { max-width: 720px; margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.mod-management-actions { display: flex; align-items: center; gap: 8px; }
+.mod-management-summary { padding: 14px 18px; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+.mod-management-summary > div { min-width: 0; padding: 10px; display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-soft); }
+.mod-management-summary span { color: var(--muted); font-size: 10px; }
+.mod-management-summary strong { overflow-wrap: anywhere; }
+.mod-management-tabs { padding: 0 18px; display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--border-subtle); }
+.mod-management-tabs button { min-height: 34px; padding: 0 10px; color: var(--muted); border: 0; border-bottom: 2px solid transparent; background: transparent; font-size: 11px; }
+.mod-management-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+.mod-management-toolbar { padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.mod-management-toolbar p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.mod-management-list { padding: 0 18px 16px; }
+.mod-management-list > article { padding: 13px 0; border-bottom: 1px solid var(--border-subtle); }
+.mod-management-list > article.is-unknown { background: color-mix(in srgb, var(--warning) 4%, transparent); }
+.mod-artifact-heading { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.mod-artifact-heading > div { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
+.mod-artifact-heading small { color: var(--faint); overflow-wrap: anywhere; }
+.mod-role-server-only, .mod-role-both { color: var(--accent); }
+.mod-role-client-only, .mod-role-client-optional { color: var(--info, var(--accent)); }
+.mod-role-unknown { color: var(--warning); }
+.mod-artifact-meta { padding: 7px 0 5px 52px; display: flex; flex-wrap: wrap; gap: 8px 18px; color: var(--faint); font: 10px "Cascadia Mono", Consolas, monospace; }
+.mod-artifact-evidence { padding-left: 52px; display: flex; flex-wrap: wrap; gap: 5px; }
+.mod-artifact-evidence span { padding: 3px 6px; border-radius: 5px; font-size: 10px; }
+.strong-evidence { color: var(--accent); background: var(--accent-soft); }
+.weak-evidence { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
+.mod-role-override { margin: 8px 0 0 52px; display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+.mod-role-override select { min-height: 30px; padding: 0 8px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+.embedded-list > article > ul { margin: 9px 0 0 52px; padding: 0; list-style: none; }
+.embedded-list li { padding: 7px 0; display: flex; flex-direction: column; gap: 2px; border-top: 1px solid var(--border-subtle); }
+.embedded-list li small { color: var(--muted); }
+.mod-management-empty { min-height: 72px; padding: 18px; display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
+.mod-management-empty p { margin: 0; line-height: 1.55; }
+.mod-launch-history { padding: 12px 18px 18px; }
+.mod-launch-history > .privacy-note { margin: 0 0 10px; }
+.mod-launch-attempt { margin: 8px 0; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-soft); }
+.mod-launch-attempt summary { min-height: 38px; padding: 8px 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; cursor: pointer; list-style: none; }
+.mod-launch-attempt summary::-webkit-details-marker { display: none; }
+.mod-launch-attempt summary > span:nth-last-of-type(1) { color: var(--muted); font-size: 10px; }
+.mod-launch-attempt summary em { margin-left: auto; color: var(--danger); font: 10px "Cascadia Mono", Consolas, monospace; }
+.mod-launch-ready { color: var(--accent); }
+.mod-launch-failed { color: var(--danger); }
+.mod-launch-exited { color: var(--muted); }
+.mod-launch-attempt-body { padding: 0 10px 10px; }
+.mod-launch-facts { display: flex; flex-wrap: wrap; gap: 5px 14px; color: var(--muted); font-size: 10px; }
+.mod-launch-attempt-body ul { margin: 6px 0 0 18px; padding: 0; }
+.mod-launch-evidence { max-height: 180px; overflow: auto; color: var(--faint); font: 10px/1.45 "Cascadia Mono", Consolas, monospace; }
+.mod-launch-evidence span { color: var(--muted); }
+.mod-quarantine { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-subtle); }
+.mod-quarantine > header { margin-bottom: 8px; }
+.mod-quarantine h3, .mod-quarantine h4 { margin: 0; }
+.mod-quarantine h4 { margin-bottom: 8px; font-size: 12px; }
+.mod-quarantine-candidates, .mod-quarantine-operations { margin-top: 14px; }
+.mod-quarantine-candidate { min-height: 48px; padding: 8px 10px; display: flex; align-items: center; gap: 10px; border: 1px solid var(--border-subtle); border-bottom-width: 0; background: var(--bg-soft); }
+.mod-quarantine-candidate:first-of-type { border-radius: 8px 8px 0 0; }
+.mod-quarantine-candidate:last-of-type { border-bottom-width: 1px; border-radius: 0 0 8px 8px; }
+.mod-quarantine-candidate:only-of-type { border-radius: 8px; }
+.mod-quarantine-candidate > input { flex: 0 0 auto; width: 16px; height: 16px; accent-color: var(--accent); }
+.mod-quarantine-candidate > span:first-of-type { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.mod-quarantine-candidate small, .mod-quarantine-operation li small { color: var(--faint); overflow-wrap: anywhere; font: 10px/1.45 "Cascadia Mono", Consolas, monospace; }
+.mod-quarantine-candidate.is-invalid { opacity: .72; }
+.mod-quarantine-confirm, .mod-quarantine-restore { margin-top: 10px; display: flex; align-items: end; flex-wrap: wrap; gap: 8px; }
+.mod-quarantine-confirm label, .mod-quarantine-restore label { flex-basis: 100%; color: var(--muted); font-size: 11px; }
+.mod-quarantine-confirm input, .mod-quarantine-restore input { min-width: 190px; max-width: 320px; }
+.mod-quarantine-operations > h4 { margin-bottom: 8px; }
+.mod-quarantine-operation { margin: 8px 0; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-soft); }
+.mod-quarantine-operation-heading, .mod-quarantine-operation-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.mod-quarantine-operation-heading time, .mod-quarantine-operation-facts { color: var(--muted); font-size: 10px; }
+.mod-quarantine-operation-facts { margin-top: 8px; overflow-wrap: anywhere; }
+.mod-quarantine-operation ul { margin: 8px 0 0 18px; padding: 0; }
+.mod-quarantine-operation li { padding: 3px 0; }
+.mod-quarantine-operation li small { display: block; }
+.mod-quarantine-operation > .privacy-note { margin: 8px 0 0; }
+.quarantine-status-needs-recovery, .quarantine-status-restoring, .quarantine-status-rechecking { color: var(--warning); }
+.quarantine-status-committed, .quarantine-status-restored { color: var(--accent); }
 .catalog-stop-note { margin: 0 18px 10px; padding: 9px 11px; display: flex; align-items: center; gap: 8px; color: var(--warning); border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border)); border-radius: 8px; background: color-mix(in srgb, var(--warning) 7%, transparent); font-size: 11px; }
 .catalog-results-heading { padding: 15px 18px 10px; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .catalog-results-heading h3 { margin: 3px 0 0; font-size: 17px; }
@@ -1259,6 +1339,8 @@ a { color: var(--accent); }
   .bedrock-addon-safety-grid { grid-template-columns:1fr; }
   .palworld-download-facts { grid-template-columns: 1fr; }
   .crossplay-components,.crossplay-join-grid { grid-template-columns:1fr; }
+  .mod-management-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .mod-overview-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 760px) {
@@ -1276,5 +1358,48 @@ a { color: var(--accent); }
   .palworld-editor-grid, .palworld-editor-grid.rate-grid, .palworld-toggle-grid { grid-template-columns: 1fr; }
   .palworld-player-list > article { align-items: flex-start; flex-wrap: wrap; }
   .palworld-player-list dl { width: 100%; justify-content: space-between; padding-left: 52px; }
+  .mod-management-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .mod-management-header, .mod-management-toolbar { align-items: stretch !important; flex-direction: column; }
+  .mod-management-actions { justify-content: space-between; }
 }
 .wizard-footer > span { color: var(--muted); font-size: 12px; }
+
+/* M4 read-only Modpack import wizard */
+.modpack-import-wizard { width: min(920px, calc(100vw - 32px)); max-height: min(90vh, 860px); overflow: auto; }
+.wizard-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 0 0 20px; }
+.wizard-steps span { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.wizard-steps b { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 50%; }
+.wizard-steps span.active { color: var(--text); }
+.wizard-steps span.active b, .wizard-steps span.done b { color: var(--accent-contrast); background: var(--accent); border-color: var(--accent); }
+.modpack-wizard-stage { display: grid; gap: 16px; min-height: 300px; }
+.modpack-source-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.modpack-wizard-stage h3 { margin: 0; }
+.modpack-source-note, .modpack-wizard-stage > p { color: var(--muted); }
+.modpack-safety-grid, .modpack-role-grid, .modpack-target-grid, .modpack-plan-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.modpack-safety-grid span, .modpack-role-grid > div, .modpack-target-grid > div, .modpack-plan-summary > div { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+.modpack-safety-grid span { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+.modpack-target-grid span, .modpack-plan-summary span { display: block; color: var(--muted); font-size: 12px; }
+.modpack-target-grid strong, .modpack-plan-summary strong { display: block; margin-top: 4px; }
+.modpack-role-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.modpack-role-grid span { display: block; color: var(--muted); font-size: 12px; }
+.modpack-role-grid strong { display: block; margin-top: 4px; font-size: 20px; }
+.modpack-artifact-list, .modpack-redistribution-list { display: grid; gap: 8px; max-height: 260px; overflow: auto; }
+.modpack-artifact-list > div, .modpack-redistribution-list > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.modpack-artifact-list span, .modpack-redistribution-list small { color: var(--muted); font-size: 12px; }
+.modpack-artifact-list em, .modpack-redistribution-list small { grid-column: 1 / -1; }
+.modpack-unresolved-list { padding: 12px; border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border)); border-radius: 10px; }
+.modpack-unresolved-list p { display: flex; gap: 7px; margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.modpack-redistribution-list .allowed { color: #4ac58f; font-size: 12px; }
+.modpack-redistribution-list .blocked { color: var(--warning); font-size: 12px; }
+.modpack-destination-field, .modpack-confirm-field { display: grid; gap: 6px; }
+.modpack-destination-field > span, .modpack-confirm-field > span { font-size: 12px; color: var(--muted); }
+.modpack-destination-field > div { display: flex; gap: 8px; }
+.modpack-destination-field input, .modpack-confirm-field input { min-width: 0; flex: 1; }
+.modpack-confirm-field small { color: var(--muted); font-size: 11px; }
+.modpack-plan-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.modpack-plan-summary code { display: block; margin-top: 4px; overflow-wrap: anywhere; font-size: 11px; }
+@media (max-width: 760px) {
+  .wizard-steps { grid-template-columns: repeat(5, minmax(70px, 1fr)); overflow-x: auto; }
+  .modpack-role-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .modpack-safety-grid, .modpack-target-grid, .modpack-plan-summary { grid-template-columns: 1fr; }
+}

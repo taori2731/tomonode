@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { backend, confirmDanger, selectExtensionFile } from "../lib/backend";
+import { backend, confirmDanger, selectClientManifestDestination, selectExtensionFile } from "../lib/backend";
 import { useI18n, type AppLocale } from "../lib/i18n";
 import { translateGeneratedText } from "../lib/documentTranslation";
 import type {
@@ -13,8 +13,14 @@ import type {
   ExtensionVersionOption,
   RuntimeStatus,
   ServerProfile,
+  ModManagementArtifact,
+  ModManagementState,
+  ModLaunchAttempt,
+  ModQuarantineOverview,
+  ModQuarantineSelection,
 } from "../types";
 import { Icon } from "./Icon";
+import { ModManagementPanel } from "./ModManagementPanel";
 import { OperationOverlay } from "./OperationOverlay";
 
 const kindLabel: Record<ExtensionKind, string> = { mod: "Mod", plugin: "プラグイン", datapack: "データパック", behavior_pack: "Behavior Pack", resource_pack: "Resource Pack", addon: "アドオン" };
@@ -37,9 +43,19 @@ export function ExtensionsTab({ server, status, notify, fail }: { server: Server
   const { locale } = useI18n();
   const localized = (value: string) => translateGeneratedText(value, locale);
   const isBedrock = server.serverType === "bedrock";
-  const kinds = useMemo<ExtensionKind[]>(() => isBedrock ? ["addon", "behavior_pack", "resource_pack"] : server.serverType === "paper" ? ["plugin", "datapack"] : ["fabric", "forge", "neoforge"].includes(server.serverType) ? ["mod", "datapack"] : ["datapack"], [server.serverType, isBedrock]);
+  const kinds = useMemo<ExtensionKind[]>(() => isBedrock ? ["addon", "behavior_pack", "resource_pack"] : server.serverType === "paper" ? ["plugin", "datapack"] : ["fabric", "forge", "neoforge", "quilt"].includes(server.serverType) ? ["mod", "datapack"] : ["datapack"], [server.serverType, isBedrock]);
   const [kind, setKind] = useState<ExtensionKind>(kinds[0]);
   const [installed, setInstalled] = useState<ExtensionInfo[]>([]);
+  const [installedServerId, setInstalledServerId] = useState<string>();
+  const [modManagement, setModManagement] = useState<ModManagementState>();
+  const [modManagementServerId, setModManagementServerId] = useState<string>();
+  const [launchAttempts, setLaunchAttempts] = useState<ModLaunchAttempt[]>([]);
+  const [modQuarantine, setModQuarantine] = useState<ModQuarantineOverview>();
+  const [modManagementBusy, setModManagementBusy] = useState(false);
+  const activeServerId = useRef(server.id);
+  const serverGeneration = useRef(0);
+  const installedRequestGeneration = useRef(0);
+  const modRequestGeneration = useRef(0);
   const [results, setResults] = useState<ExtensionSearchHit[]>([]);
   const [selected, setSelected] = useState<ExtensionSearchHit>();
   const [versions, setVersions] = useState<ExtensionVersionOption[]>([]);
@@ -56,7 +72,123 @@ export function ExtensionsTab({ server, status, notify, fail }: { server: Server
   const [includeFloodgate, setIncludeFloodgate] = useState(true);
   const [acceptCrossplayWarnings, setAcceptCrossplayWarnings] = useState(false);
   const stopped = status.state === "stopped";
-  const refresh = () => backend.listExtensions(server.id).then(setInstalled).catch((reason) => fail(String(reason)));
+  const visibleInstalled = installedServerId === server.id ? installed : [];
+  const refresh = async (requestedServerId = server.id) => {
+    if (activeServerId.current !== requestedServerId) return;
+    const generation = serverGeneration.current;
+    const request = ++installedRequestGeneration.current;
+    try {
+      const nextInstalled = await backend.listExtensions(requestedServerId);
+      if (activeServerId.current !== requestedServerId
+        || serverGeneration.current !== generation
+        || installedRequestGeneration.current !== request) return;
+      setInstalled(nextInstalled);
+      setInstalledServerId(requestedServerId);
+    } catch (reason) {
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) fail(String(reason));
+    }
+  };
+  const javaModManagement = !isBedrock && ["fabric", "forge", "neoforge", "quilt", "paper", "vanilla"].includes(server.serverType);
+  const loadModManagementData = async (requestedServerId = server.id) => {
+    if (activeServerId.current !== requestedServerId) return false;
+    const generation = serverGeneration.current;
+    const request = ++modRequestGeneration.current;
+    const [nextState, attempts, quarantine] = await Promise.all([
+      backend.refreshModManagementState(requestedServerId),
+      backend.listModLaunchAttempts(requestedServerId),
+      backend.listModQuarantineOperations(requestedServerId),
+    ]);
+    if (activeServerId.current !== requestedServerId
+      || serverGeneration.current !== generation
+      || modRequestGeneration.current !== request) return false;
+    setModManagement(nextState);
+    setModManagementServerId(requestedServerId);
+    setLaunchAttempts(attempts);
+    setModQuarantine(quarantine);
+    return true;
+  };
+  const refreshModManagement = async () => {
+    if (!javaModManagement) return;
+    const requestedServerId = server.id;
+    const generation = serverGeneration.current;
+    if (activeServerId.current !== requestedServerId) return;
+    setModManagementBusy(true);
+    try {
+      await loadModManagementData(requestedServerId);
+    }
+    catch (reason) {
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) fail(String(reason));
+    }
+    finally {
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) setModManagementBusy(false);
+    }
+  };
+
+  const applyQuarantine = async (selections: ModQuarantineSelection[], confirmation: string) => {
+    const requestedServerId = server.id;
+    const generation = serverGeneration.current;
+    if (activeServerId.current !== requestedServerId) return;
+    if (status.state !== "stopped") throw new Error("隔離前にサーバーを完全停止してください");
+    setModManagementBusy(true);
+    let failed = false;
+    let failure: unknown;
+    try {
+      const operation = await backend.applyModQuarantine(requestedServerId, selections, confirmation);
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) {
+        notify(`Modをバックアップして隔離しました。操作ID: ${operation.operationId}`);
+      }
+    } catch (reason) {
+      failed = true;
+      failure = reason;
+    } finally {
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) {
+        try { await loadModManagementData(requestedServerId); }
+        catch (reason) { if (!failed) { failed = true; failure = reason; } }
+        if (activeServerId.current === requestedServerId && serverGeneration.current === generation) setModManagementBusy(false);
+      }
+    }
+    if (failed && activeServerId.current === requestedServerId && serverGeneration.current === generation) throw failure;
+  };
+
+  const restoreQuarantine = async (operationId: string, confirmation: string) => {
+    const requestedServerId = server.id;
+    const generation = serverGeneration.current;
+    if (activeServerId.current !== requestedServerId) return;
+    if (status.state !== "stopped") throw new Error("復元前にサーバーを完全停止してください");
+    setModManagementBusy(true);
+    let failed = false;
+    let failure: unknown;
+    try {
+      const operation = await backend.restoreModQuarantine(requestedServerId, operationId, confirmation);
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) {
+        notify(`隔離したModを元パスへ復元しました。操作ID: ${operation.operationId}`);
+      }
+    } catch (reason) {
+      failed = true;
+      failure = reason;
+    } finally {
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) {
+        try { await loadModManagementData(requestedServerId); }
+        catch (reason) { if (!failed) { failed = true; failure = reason; } }
+        if (activeServerId.current === requestedServerId && serverGeneration.current === generation) setModManagementBusy(false);
+      }
+    }
+    if (failed && activeServerId.current === requestedServerId && serverGeneration.current === generation) throw failure;
+  };
+
+  useLayoutEffect(() => {
+    activeServerId.current = server.id;
+    serverGeneration.current += 1;
+    installedRequestGeneration.current += 1;
+    modRequestGeneration.current += 1;
+    setInstalled([]);
+    setInstalledServerId(undefined);
+    setModManagement(undefined);
+    setModManagementServerId(undefined);
+    setLaunchAttempts([]);
+    setModQuarantine(undefined);
+    setModManagementBusy(false);
+  }, [server.id]);
 
   useEffect(() => {
     setKind(kinds[0]);
@@ -69,7 +201,10 @@ export function ExtensionsTab({ server, status, notify, fail }: { server: Server
     setCrossplayResult(undefined);
     setIncludeFloodgate(true);
     setAcceptCrossplayWarnings(false);
+    setLaunchAttempts([]);
+    setModQuarantine(undefined);
     refresh();
+    if (javaModManagement) void refreshModManagement();
   }, [server.id, kinds.join(",")]);
 
   useEffect(() => {
@@ -227,6 +362,35 @@ export function ExtensionsTab({ server, status, notify, fail }: { server: Server
     catch (reason) { fail(String(reason)); }
   };
 
+  const exportClientManifest = async () => {
+    const destination = await selectClientManifestDestination(`${server.name.replace(/[\\/:*?"<>|]/g, "-")}-client-mods.json`);
+    if (!destination) return;
+    try {
+      const count = await backend.exportClientModManifest(server.id, destination);
+      notify(`クライアント用Modマニフェストを出力しました（${count}件）。JARはコピーしていません`);
+    } catch (reason) { fail(String(reason)); }
+  };
+
+  const overrideModRole = async (artifact: ModManagementArtifact, role: string) => {
+    if (!role || role === artifact.role) return;
+    const requestedServerId = server.id;
+    const generation = serverGeneration.current;
+    if (activeServerId.current !== requestedServerId) return;
+    try {
+      setModManagementBusy(true);
+      const nextState = await backend.setModManagementRole(requestedServerId, artifact.artifactId, role, "画面でユーザー確認");
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) {
+        setModManagement(nextState);
+        setModManagementServerId(requestedServerId);
+        notify(`${artifact.fileName} の分類を ${role} に更新しました`);
+      }
+    } catch (reason) {
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) fail(String(reason));
+    } finally {
+      if (activeServerId.current === requestedServerId && serverGeneration.current === generation) setModManagementBusy(false);
+    }
+  };
+
   const installOverlay = ["install", "install-local", "crossplay-install"].includes(busy)
     ? <OperationOverlay title={busy === "crossplay-install" ? "クロスプレイ機能を導入しています" : isBedrock ? "統合版アドオンを導入しています" : "拡張機能を導入しています"} detail="変更前バックアップを作成し、配布ファイルと互換性を検証してから反映しています。" stages={["バックアップ", "ファイル検証", "導入"]} />
     : null;
@@ -252,8 +416,8 @@ export function ExtensionsTab({ server, status, notify, fail }: { server: Server
     </section>
 
     <section className="feature-panel installed-panel">
-      <header><div><span className="section-kicker">INSTALLED · BEDROCK</span><h2>適用済みアドオン</h2><p>公式BDSに最初から含まれる内蔵パックは表示せず、追加・適用したパックだけを表示します。</p></div><span>{installed.length}件</span></header>
-      <div className="installed-list">{installed.map((item) => <div key={`${item.kind}-${item.fileName}`}><span className={`extension-state ${item.enabled ? "enabled" : ""}`}><Icon name="plugin" /></span><div><strong>{item.fileName}</strong><small>{kindLabel[item.kind]} · {formatSize(item.sizeBytes)}{item.manageable ? " · アプリ管理" : " · 外部追加（参照のみ）"}</small><p>{item.compatibility}</p><em>{item.clientRequirement}</em></div>{item.manageable ? <><button className="small-button" type="button" disabled={!stopped} onClick={() => toggle(item)}>{item.enabled ? "無効化" : "有効化"}</button><button className="icon-button danger-icon" type="button" disabled={!stopped} onClick={() => remove(item)} aria-label={`${item.fileName}を削除`}><Icon name="trash" size={18} /></button></> : <span className="status-pill">保護中</span>}</div>)}{installed.length === 0 ? <div className="panel-empty compact"><p>追加・適用済みの統合版アドオンはありません。公式BDS同梱パックは安全のため一覧から除外しています。</p></div> : null}</div>
+      <header><div><span className="section-kicker">INSTALLED · BEDROCK</span><h2>適用済みアドオン</h2><p>公式BDSに最初から含まれる内蔵パックは表示せず、追加・適用したパックだけを表示します。</p></div><span>{visibleInstalled.length}件</span></header>
+      <div className="installed-list">{visibleInstalled.map((item) => <div key={`${item.kind}-${item.fileName}`}><span className={`extension-state ${item.enabled ? "enabled" : ""}`}><Icon name="plugin" /></span><div><strong>{item.fileName}</strong><small>{kindLabel[item.kind]} · {formatSize(item.sizeBytes)}{item.manageable ? " · アプリ管理" : " · 外部追加（参照のみ）"}</small><p>{item.compatibility}</p><em>{item.clientRequirement}</em></div>{item.manageable ? <><button className="small-button" type="button" disabled={!stopped} onClick={() => toggle(item)}>{item.enabled ? "無効化" : "有効化"}</button><button className="icon-button danger-icon" type="button" disabled={!stopped} onClick={() => remove(item)} aria-label={`${item.fileName}を削除`}><Icon name="trash" size={18} /></button></> : <span className="status-pill">保護中</span>}</div>)}{visibleInstalled.length === 0 ? <div className="panel-empty compact"><p>追加・適用済みの統合版アドオンはありません。公式BDS同梱パックは安全のため一覧から除外しています。</p></div> : null}</div>
     </section>
 
     <section className="feature-panel crossplay-guide-panel">
@@ -266,6 +430,7 @@ export function ExtensionsTab({ server, status, notify, fail }: { server: Server
   </div>{installOverlay}</>;
 
   return <><div className="tab-content extensions-content">
+    {javaModManagement ? <ModManagementPanel key={server.id} server={server} state={modManagementServerId === server.id ? modManagement : undefined} attempts={modManagementServerId === server.id ? launchAttempts : []} quarantine={modManagementServerId === server.id ? modQuarantine : undefined} runtimeState={status.state} busy={modManagementBusy} onRefresh={() => void refreshModManagement()} onExport={() => void exportClientManifest()} onOverride={(artifact, role) => void overrideModRole(artifact, role)} onApplyQuarantine={applyQuarantine} onRestoreQuarantine={restoreQuarantine} onNotify={notify} onFail={fail} /> : null}
     <section className="feature-panel extension-browser">
       <header className="extension-browser-header">
         <div><span className="section-kicker">SAFE CATALOG</span><h2>{localized(`${kindLabel[kind]}を探して導入`)}</h2><p>{localized(`${server.minecraftVersion} / ${server.serverType} に合う項目だけを表示します`)}</p></div>
@@ -304,8 +469,8 @@ export function ExtensionsTab({ server, status, notify, fail }: { server: Server
     </section>
 
     <section className="feature-panel installed-panel">
-      <header><div><span className="section-kicker">INSTALLED</span><h2>インストール済み</h2></div><span>{installed.length}件</span></header>
-      <div className="installed-list">{installed.map((item) => <div key={`${item.kind}-${item.fileName}`}><span className={`extension-state ${item.enabled ? "enabled" : ""}`}><Icon name="plugin" /></span><div><strong>{item.fileName}</strong><small>{kindLabel[item.kind]} · {formatSize(item.sizeBytes)}</small><p>{item.compatibility}</p><em>{item.clientRequirement}</em></div>{item.manageable ? <><button className="small-button" type="button" disabled={!stopped} onClick={() => toggle(item)}>{item.enabled ? "無効化" : "有効化"}</button><button className="icon-button danger-icon" type="button" disabled={!stopped} onClick={() => remove(item)} aria-label={`${item.fileName}を削除`}><Icon name="trash" size={18} /></button></> : <span className="status-pill">{localized("保護中")}</span>}</div>)}{installed.length === 0 ? <div className="panel-empty compact"><p>{localized(`追加済みの${kindLabel[kind]}はありません。`)}</p></div> : null}</div>
+      <header><div><span className="section-kicker">INSTALLED</span><h2>インストール済み</h2></div><span>{visibleInstalled.length}件</span></header>
+      <div className="installed-list">{visibleInstalled.map((item) => <div key={`${item.kind}-${item.fileName}`}><span className={`extension-state ${item.enabled ? "enabled" : ""}`}><Icon name="plugin" /></span><div><strong>{item.fileName}</strong><small>{kindLabel[item.kind]} · {formatSize(item.sizeBytes)}</small><p>{item.compatibility}</p><em>{item.clientRequirement}</em></div>{item.manageable ? <><button className="small-button" type="button" disabled={!stopped} onClick={() => toggle(item)}>{item.enabled ? "無効化" : "有効化"}</button><button className="icon-button danger-icon" type="button" disabled={!stopped} onClick={() => remove(item)} aria-label={`${item.fileName}を削除`}><Icon name="trash" size={18} /></button></> : <span className="status-pill">{localized("保護中")}</span>}</div>)}{visibleInstalled.length === 0 ? <div className="panel-empty compact"><p>{localized(`追加済みの${kindLabel[kind]}はありません。`)}</p></div> : null}</div>
     </section>
     {server.serverType === "paper" ? <section className="feature-panel crossplay-guide-panel crossplay-install-panel">
       <header><div><span className="section-kicker">OPTIONAL CROSSPLAY · OFFICIAL RELEASES</span><h2>統合版の友達も参加できるようにする</h2></div><span className="status-pill">Geyser</span></header>

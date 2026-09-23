@@ -250,4 +250,50 @@ describe("document translation", () => {
     expect(translateGeneratedText("未保存の変更差分", "fr")).toBe("Modifications non enregistrées");
     expect(translateGeneratedText("server.properties変更案", "zh-TW")).toBe("server.properties 變更建議");
   });
+
+  it("localizes the M3/M4/M6 Mod management routes and preserves exact quarantine confirmations", () => {
+    const terms = [
+      "サーバー構成", "Mod構成を開く", "サーバー用Mod", "クライアント用Mod",
+      "サーバー／クライアント構成", "Mod構成の分類", "サーバー構成の概要", "未確認",
+      "最終起動検証", "サーバー用", "クライアント用", "両方", "任意クライアント",
+      "強い根拠", "弱いヒューリスティック", "確認して分類", "分類を再確認",
+      "Modパックから新規構成を作成", "入力は読み取り専用で解析し、確認済みのローカルJARだけを新しい空フォルダーへコピーします。",
+      "1. ファイル／フォルダーを選択", "2. 対象を確認", "3. サーバー用／クライアント用を分類",
+      "4. 未解決依存と再配布条件", "5. 適用計画を確認",
+      "対象が未確認でも自動補完しません。既存サーバーの対象を使う場合は、作成前に必ず確認してください。",
+      "未確認は作成先へ配置しません",
+      "既存サーバーへの適用は未実装で無効です。unknown、client-only、取得不能、再配布条件不明のJARはコピーしません。",
+      "確認文字列は計画fingerprintと一致する必要があります。",
+      "隔離候補と操作履歴", "表示する候補はmods直下のJAR全体です。起動履歴の候補は目印だけに使い、選択・移動は自動で行いません。隔離前にバックアップを作成し、元パスとSHA-256を記録します。",
+      "隔離・復元にはサーバーが完全停止している必要があります。現在の状態: running",
+      "上書きせずに元パスへ復元", "次回起動の検証待ち", "要確認",
+      "この操作より後に開始した新しい起動がReady markerへ到達すると確定します。起動失敗は要確認になり、自動復元しません。",
+      "サーバーを停止したまま元パスと隔離先のSHA-256を確認し、同名ファイルを上書きせず明示的に復元してください。外部変更がある場合は手動確認が必要です。",
+      "入力", "対象", "分類", "未解決／配布", "作成計画", "戻る", "次へ", "閉じる",
+      "未確認のまま", "Mod ID未確認", "内蔵ID未確認", "配布元ID未確認", "有効なトップレベルModはありません。",
+      "クライアントへ案内できる確定済みModはありません。未確認は自動で含めません。", "内蔵ライブラリは見つかりませんでした。",
+      "Modパックファイルを選択", "mods／profileフォルダーを選択", "ZIP安全検査", "元ファイル不変", "ネットワーク不要",
+    ];
+    const untranslated: string[] = [];
+    for (const locale of locales.filter((value) => value !== "ja")) {
+      for (const term of terms) {
+        const translated = translateGeneratedText(term, locale);
+        if (japaneseKana.test(translated)) untranslated.push(`${locale}: ${term} -> ${translated}`);
+      }
+      for (const term of [
+        "確認のため「隔離を実行」と入力",
+        "確認のため「復元を実行」と入力",
+      ]) {
+        const translated = translateGeneratedText(term, locale);
+        const required = term.includes("隔離") ? "隔離を実行" : "復元を実行";
+        expect(translated).toContain(required);
+        expect(translated.replace(required, "")).not.toMatch(japaneseKana);
+      }
+      for (const term of ["サーバー用 (4)", "client.jarを隔離対象に選択", "選択した2件をバックアップして隔離", "3件"]) {
+        const translated = translateGeneratedText(term, locale);
+        if (japaneseKana.test(translated)) untranslated.push(`${locale}: ${term} -> ${translated}`);
+      }
+    }
+    expect(untranslated).toEqual([]);
+  });
 });

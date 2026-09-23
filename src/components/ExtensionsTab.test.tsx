@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { backend } from "../lib/backend";
-import type { ExtensionInfo, RuntimeStatus } from "../types";
+import { I18nProvider } from "../lib/i18n";
+import type { ExtensionInfo, ModManagementState, ModQuarantineOverview, RuntimeStatus } from "../types";
 import { ExtensionsTab } from "./ExtensionsTab";
 
 afterEach(() => vi.restoreAllMocks());
@@ -81,5 +82,114 @@ describe("拡張機能カタログ", () => {
     expect(screen.getByText(/追加・削除・有効切替にはサーバー停止が必要/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /ファイルから追加/ })).toBeDisabled();
     expect(fail).not.toHaveBeenCalled();
+  });
+
+  it("server.id切替でMod選択・確認をリセットし、旧サーバーの遅延応答を捨てる", async () => {
+    const base = (await backend.listServers()).find((item) => item.serverType === "paper")!;
+    const serverA = { ...base, id: "m6-server-a", name: "M6 A" };
+    const serverB = { ...base, id: "m6-server-b", name: "M6 B" };
+    const stopped: RuntimeStatus = { state: "stopped", playerCount: 0, maxPlayers: 20, memoryUsedMib: 0, uptimeSeconds: 0, address: "127.0.0.1:25565", cpuPercent: 0, tps: null, tpsSupported: false, pingLatencyMs: null };
+    const extension = (fileName: string): ExtensionInfo => ({ fileName, kind: "plugin", enabled: true, sizeBytes: 12, compatibility: "Paper", clientRequirement: "サーバー側のみ", manageable: true });
+    const state = (serverId: string): ModManagementState => ({
+      schemaVersion: 1,
+      serverId,
+      target: { game: "minecraft-java", minecraftVersion: "1.21.1", loader: "paper", javaMajor: 21 },
+      desiredSets: { server: [], client: [], optionalClient: [] },
+      roleOverrides: [],
+      artifacts: [],
+      lastSuccessfulLaunch: null,
+      updatedAt: "test",
+    });
+    const overview = (fileName: string): ModQuarantineOverview => ({
+      schemaVersion: 1,
+      candidates: [{ relativePath: fileName, fileName, sha256: (fileName.startsWith("b-") ? "b" : fileName.startsWith("stale-") ? "c" : "a").repeat(64), sizeBytes: 12, valid: true, reasons: [] }],
+      operations: [],
+    });
+    const deferred = <T,>() => {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+      return { promise, resolve };
+    };
+
+    const staleInstalled = deferred<ExtensionInfo[]>();
+    const bInstalled = deferred<ExtensionInfo[]>();
+    const staleQuarantine = deferred<ModQuarantineOverview>();
+    const bQuarantine = deferred<ModQuarantineOverview>();
+    const applyQuarantine = vi.spyOn(backend, "applyModQuarantine").mockResolvedValue({
+      schemaVersion: 1,
+      operationId: "operation-b",
+      serverId: serverB.id,
+      status: "awaiting-launch-validation",
+      stage: "quarantined",
+      selected: [],
+      plannedAt: "test",
+      updatedAt: "test",
+      launchValidation: {},
+      recoveryGuidance: "",
+    });
+    let aInstalledCalls = 0;
+    let aQuarantineCalls = 0;
+    const listExtensions = vi.spyOn(backend, "listExtensions").mockImplementation((serverId) => {
+      if (serverId === serverA.id) {
+        aInstalledCalls += 1;
+        if (aInstalledCalls === 2) return staleInstalled.promise;
+        return Promise.resolve([extension("a-plugin.jar")]);
+      }
+      return bInstalled.promise;
+    });
+    vi.spyOn(backend, "setExtensionEnabled").mockResolvedValue(undefined);
+    vi.spyOn(backend, "searchExtensions").mockResolvedValue([]);
+    vi.spyOn(backend, "refreshModManagementState").mockImplementation(async (serverId) => state(serverId));
+    vi.spyOn(backend, "listModLaunchAttempts").mockResolvedValue([]);
+    vi.spyOn(backend, "listModQuarantineOperations").mockImplementation((serverId) => {
+      if (serverId === serverA.id) {
+        aQuarantineCalls += 1;
+        if (aQuarantineCalls === 2) return staleQuarantine.promise;
+        return Promise.resolve(overview("a-only.jar"));
+      }
+      return bQuarantine.promise;
+    });
+
+    localStorage.setItem("server-hub:language:v1", "ja");
+    const renderServer = (selectedServer: typeof serverA) => <I18nProvider><ExtensionsTab server={selectedServer} status={stopped} notify={vi.fn()} fail={vi.fn()} /></I18nProvider>;
+    const { rerender } = render(renderServer(serverA));
+    expect(await screen.findByText("a-plugin.jar")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "隔離・履歴" }));
+    await screen.findByRole("checkbox", { name: "a-only.jarを隔離対象に選択" });
+    fireEvent.click(screen.getByRole("checkbox", { name: "a-only.jarを隔離対象に選択" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "隔離確認文" }), { target: { value: "隔離を実行" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "再スキャン" }));
+    await waitFor(() => expect(aQuarantineCalls).toBe(2));
+    fireEvent.click(screen.getByRole("button", { name: "無効化" }));
+    await waitFor(() => expect(listExtensions).toHaveBeenCalledTimes(2));
+
+    rerender(renderServer(serverB));
+    expect(screen.queryByText("a-plugin.jar")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "a-only.jarを隔離対象に選択" })).not.toBeInTheDocument();
+    await act(async () => {
+      bInstalled.resolve([extension("b-plugin.jar")]);
+      bQuarantine.resolve(overview("b-only.jar"));
+    });
+    expect(await screen.findByText("b-plugin.jar")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "隔離・履歴" }));
+    const bCheckbox = await screen.findByRole("checkbox", { name: "b-only.jarを隔離対象に選択" });
+    expect(bCheckbox).not.toBeChecked();
+    expect(screen.getByRole("textbox", { name: "隔離確認文" })).toHaveValue("");
+
+    await act(async () => {
+      staleInstalled.resolve([extension("stale-a-plugin.jar")]);
+      staleQuarantine.resolve(overview("stale-a.jar"));
+    });
+    expect(screen.getByText("b-plugin.jar")).toBeInTheDocument();
+    expect(screen.queryByText("stale-a-plugin.jar")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "a-only.jarを隔離対象に選択" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "stale-a.jarを隔離対象に選択" })).not.toBeInTheDocument();
+
+    fireEvent.click(bCheckbox);
+    fireEvent.change(screen.getByRole("textbox", { name: "隔離確認文" }), { target: { value: "隔離を実行" } });
+    fireEvent.click(screen.getByRole("button", { name: "選択した1件をバックアップして隔離" }));
+    await waitFor(() => expect(applyQuarantine).toHaveBeenCalledWith(serverB.id, [{ relativePath: "b-only.jar", sha256: "b".repeat(64) }], "隔離を実行"));
+    expect(applyQuarantine).not.toHaveBeenCalledWith(serverA.id, expect.anything(), expect.anything());
   });
 });

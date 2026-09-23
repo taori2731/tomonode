@@ -97,6 +97,8 @@ struct ResolvedInstallItem {
     url: String,
     sha512: String,
     sha1: String,
+    /// Retain Modrinth's explicit environment for offline M3 classification.
+    environment: String,
 }
 
 #[derive(Debug, Clone)]
@@ -425,6 +427,7 @@ async fn install_resolved(
             "projectId": item.public.project_id, "versionId": item.public.version_id,
             "versionNumber": item.public.version_number, "sha512": item.sha512,
             "sha1": item.sha1, "dependency": item.public.dependency,
+            "environment": item.environment,
         });
         let manifest_path = manifest_dir.join(format!("{}.json", item.sha512));
         if let Err(error) = std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?) {
@@ -561,6 +564,7 @@ async fn resolve_modrinth_install(
             url: selected.url.clone(),
             sha512,
             sha1,
+            environment: version.environment.clone(),
         });
 
         for relation in &version.dependencies {

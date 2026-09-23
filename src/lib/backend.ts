@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import packageMetadata from "../../package.json";
 import { brand } from "./brand";
 import type {
   CreateServerInput,
@@ -57,6 +58,14 @@ import type {
   ExtensionCheckReport,
   MigrationExportResult,
   MigrationManifest,
+  ModManagementState,
+  ModLaunchAttempt,
+  ModQuarantineOverview,
+  ModQuarantineOperation,
+  ModQuarantineSelection,
+  ModpackAnalyzeTarget,
+  ModpackPlan,
+  ModpackCreateResult,
   RestoreMigrationInput,
   UpdateCenterReport,
   ApplyManagedExtensionUpdateInput,
@@ -283,9 +292,9 @@ async function desktopOr<T>(command: string, args: Record<string, unknown>, fall
 
 export const backend = {
   isDesktop: inDesktop,
-  getAppVersion: () => inDesktop ? import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()) : Promise.resolve("0.5.1"),
+  getAppVersion: () => inDesktop ? import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()) : Promise.resolve(packageMetadata.version),
   quitApp: () => desktopOr<void>("quit_app", {}, () => undefined),
-  checkAppUpdate: (endpoint?: string) => desktopOr<AppUpdateInfo>("check_app_update", { endpoint: endpoint?.trim() || null }, () => ({ configured: true, currentVersion: "0.5.1", available: false })),
+  checkAppUpdate: (endpoint?: string) => desktopOr<AppUpdateInfo>("check_app_update", { endpoint: endpoint?.trim() || null }, () => ({ configured: true, currentVersion: packageMetadata.version, available: false })),
   installAppUpdate: (expectedVersion: string, endpoint?: string) => desktopOr<void>("install_app_update", { expectedVersion, endpoint: endpoint?.trim() || null }, () => Promise.reject(new Error("Update installation is only available in the installed Windows app."))),
   listServers: () => desktopOr<ServerProfile[]>("list_servers", {}, () => [...demoServers]),
   getAutomationSettings: (serverId: string) => desktopOr<AutomationSettings>("get_automation_settings", { serverId }, () => ({ serverId, autoStopEnabled: false, idleMinutes: 30, notifyStartup: true, notifyPlayerJoin: true, notifyCrash: true, notifyBackupFailure: true, updatedAt: new Date().toISOString() })),
@@ -584,6 +593,16 @@ export const backend = {
     return { server: { ...profile }, backup: { id: `demo-world-${Date.now()}`, createdAt: new Date().toISOString(), sizeBytes: 24_800_000, path: "C:\\Backups\\before-world-regeneration.zip", serverName: profile.name, minecraftVersion: profile.minecraftVersion, serverType: profile.serverType, extensionSummary: "mods=0 plugins=0 datapacks=0", sha256: "demo-sha256", valid: true, schemaVersion: 2, kind: "before_world_regeneration", displayName: "ワールド再生成前", sourceSizeBytes: 31_000_000, fileCount: 42, verifiedAt: new Date().toISOString(), pinned: true }, removedWorldFolders: [previousWorldName] };
   }),
   listExtensions: (serverId: string) => desktopOr<ExtensionInfo[]>("list_extensions", { serverId }, () => []),
+  getModManagementState: (serverId: string) => desktopOr<ModManagementState>("get_mod_management_state", { serverId }, () => demoModManagementState(serverId)),
+  refreshModManagementState: (serverId: string) => desktopOr<ModManagementState>("refresh_mod_management_state", { serverId }, () => demoModManagementState(serverId)),
+  listModLaunchAttempts: (serverId: string) => desktopOr<ModLaunchAttempt[]>("list_mod_launch_attempts", { serverId }, () => []),
+  listModQuarantineOperations: (serverId: string) => desktopOr<ModQuarantineOverview>("list_mod_quarantine_operations", { serverId }, () => ({ schemaVersion: 1, candidates: [], operations: [] })),
+  applyModQuarantine: (serverId: string, selections: ModQuarantineSelection[], confirmation: string) => desktopOr<ModQuarantineOperation>("apply_mod_quarantine", { serverId, selections, confirmation }, () => { throw new Error("Mod隔離操作はデスクトップアプリでのみ利用できます"); }),
+  restoreModQuarantine: (serverId: string, operationId: string, confirmation: string) => desktopOr<ModQuarantineOperation>("restore_mod_quarantine", { serverId, operationId, confirmation }, () => { throw new Error("Mod復元操作はデスクトップアプリでのみ利用できます"); }),
+  setModManagementRole: (serverId: string, artifactId: string, role: string, reason?: string) => desktopOr<ModManagementState>("set_mod_management_role", { serverId, artifactId, role, reason }, () => demoModManagementState(serverId)),
+  exportClientModManifest: (serverId: string, destination: string) => desktopOr<number>("export_client_mod_manifest", { serverId, destination }, () => 0),
+  analyzeModpackSource: (source: string, target?: ModpackAnalyzeTarget) => desktopOr<ModpackPlan>("analyze_modpack_source", { source, target }, () => demoModpackPlan(target)),
+  createModpackConfiguration: (source: string, destination: string, planFingerprint: string, confirmation: string, target?: ModpackAnalyzeTarget) => desktopOr<ModpackCreateResult>("create_modpack_configuration", { source, destination, planFingerprint, confirmation, target }, () => ({ planFingerprint, stagedArtifacts: 0, excludedArtifacts: 0, stateCreated: true, destinationName: destination.split(/[\\/]/).pop() ?? "new" })),
   installLocalExtension: (serverId: string, source: string, kind: ExtensionKind) => desktopOr<ExtensionInfo>("install_local_extension", { serverId, source, kind }, () => ({ fileName: source.split(/[\\/]/).pop() ?? "example.jar", kind, enabled: true, sizeBytes: 1024, compatibility: "デモ環境", clientRequirement: kind === "mod" ? "配布元の説明を確認してください。" : "通常はサーバー側のみです。", manageable: true })),
   setExtensionEnabled: (serverId: string, fileName: string, kind: ExtensionKind, enabled: boolean) => desktopOr<void>("set_extension_enabled", { serverId, fileName, kind, enabled }, () => undefined),
   removeExtension: (serverId: string, fileName: string, kind: ExtensionKind) => desktopOr<void>("remove_extension", { serverId, fileName, kind }, () => undefined),
@@ -841,6 +860,44 @@ function demoProfile(serverId: string, name: string): ModpackProfile {
   return { id: crypto.randomUUID(), name, sourceServerId: server.id, minecraftVersion: server.minecraftVersion, serverType: server.serverType, loader: server.serverType, mods: [], plugins: [], datapacks: [], configurationFiles: [], settings: server.settings, recommendedMemoryMib: server.maxMemoryMib, plannedPlayers: server.settings.maxPlayers, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
 }
 
+function demoModManagementState(serverId: string): ModManagementState {
+  const server = demoServers.find((item) => item.id === serverId) ?? demoServers[0];
+  return {
+    schemaVersion: 1,
+    serverId,
+    target: {
+      game: "minecraft-java",
+      minecraftVersion: server.minecraftVersion,
+      loader: server.serverType,
+      loaderVersion: server.distributionBuild,
+      javaMajor: server.javaMajor,
+    },
+    desiredSets: { server: [], client: [], optionalClient: [] },
+    roleOverrides: [],
+    artifacts: [],
+    lastSuccessfulLaunch: null,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function demoModpackPlan(target?: ModpackAnalyzeTarget): ModpackPlan {
+  const resolved = target ?? { game: "minecraft-java", minecraftVersion: "1.21.11", loader: "fabric", loaderVersion: "0.16.14", javaMajor: 21 };
+  return {
+    schemaVersion: 1,
+    sourceKind: "demo",
+    sourceName: "demo-pack.mrpack",
+    target: resolved,
+    artifacts: [],
+    unresolvedDependencies: [],
+    overrides: [],
+    configFiles: [],
+    redistribution: [],
+    existingServerApply: { enabled: false, reason: "既存サーバーへの適用はM4では未実装です" },
+    safety: { readOnlyAnalysis: true, archiveLimitsChecked: true, unknownPlacementBlocked: true, sourceUnchanged: true, networkUsed: false },
+    planFingerprint: "demo-plan-fingerprint",
+  };
+}
+
 export async function selectFolder(): Promise<string | null> {
   if (!inDesktop) return "C:\\Servers";
   const { open } = await import("@tauri-apps/plugin-dialog");
@@ -861,6 +918,12 @@ export async function selectLogDestination(defaultName: string): Promise<string 
   return save({ defaultPath: defaultName, filters: [{ name: "ログ", extensions: ["log", "txt"] }] });
 }
 
+export async function selectClientManifestDestination(defaultName: string): Promise<string | null> {
+  if (!inDesktop) return null;
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  return save({ defaultPath: defaultName, filters: [{ name: "クライアント用Modマニフェスト", extensions: ["json"] }] });
+}
+
 export async function selectMigrationExport(defaultName: string): Promise<string | null> {
   if (!inDesktop) return `C:\\Downloads\\${defaultName}`;
   const { save } = await import("@tauri-apps/plugin-dialog");
@@ -878,6 +941,27 @@ export async function selectExtensionFile(kind: ExtensionKind): Promise<string |
   if (!inDesktop) return kind === "datapack" ? "C:\\Downloads\\example-datapack.zip" : "C:\\Downloads\\example-extension.jar";
   const { open } = await import("@tauri-apps/plugin-dialog");
   const selected = await open({ multiple: false, title: "追加するファイルを選択", filters: [{ name: kind === "datapack" ? "データパック" : "Java拡張", extensions: [kind === "datapack" ? "zip" : "jar"] }] });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function selectModpackSource(): Promise<string | null> {
+  if (!inDesktop) return "C:\\Downloads\\example.mrpack";
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({ multiple: false, directory: false, title: "解析するModパックファイルを選択", filters: [{ name: "CurseForge／Modrinth／JAR", extensions: ["zip", "mrpack", "jar"] }] });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function selectModpackFolder(): Promise<string | null> {
+  if (!inDesktop) return "C:\\Servers\\mods";
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({ multiple: false, directory: true, title: "解析するmodsフォルダーまたはCurseForge profileを選択" });
+  return typeof selected === "string" ? selected : null;
+}
+
+export async function selectModpackDestination(defaultName = "TomoNode-Modpack"): Promise<string | null> {
+  if (!inDesktop) return `C:\\Servers\\${defaultName}`;
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const selected = await open({ directory: true, multiple: false, title: "空の新規構成フォルダーを選択" });
   return typeof selected === "string" ? selected : null;
 }
 

@@ -1,7 +1,10 @@
-import type { LogEntry, RuntimeStatus, ServerProfile } from "../types";
+import { useEffect, useState } from "react";
+import { backend } from "../lib/backend";
+import type { LogEntry, ModManagementState, RuntimeStatus, ServerProfile } from "../types";
 import { Icon } from "./Icon";
 import { OperationsPanel } from "./OperationsPanel";
 import { NextStepsCard } from "./NextStepsCard";
+import { ModManagementSummaryCard } from "./ModManagementPanel";
 import type { TabId } from "../types";
 import { AccessLogPanel } from "./AccessLogPanel";
 
@@ -26,6 +29,19 @@ function formatUptime(seconds: number) {
 }
 
 export function OverviewTab({ server, status, logs, onCopyAddress, onOpenFolder, notify, fail, onUpdated, onNavigate = () => undefined, onInvite = () => undefined }: Props) {
+  const [modManagement, setModManagement] = useState<ModManagementState>();
+  const javaModManagement = ["fabric", "forge", "neoforge", "quilt", "paper", "vanilla"].includes(server.serverType);
+  useEffect(() => {
+    if (!javaModManagement) {
+      setModManagement(undefined);
+      return;
+    }
+    let active = true;
+    backend.getModManagementState(server.id)
+      .then((state) => active && setModManagement(state))
+      .catch((reason) => active && fail(String(reason)));
+    return () => { active = false; };
+  }, [server.id, javaModManagement]);
   const memoryManagedByWindows = server.maxMemoryMib <= 0;
   const memoryRatio = memoryManagedByWindows ? 0 : Math.min(100, Math.round((status.memoryUsedMib / server.maxMemoryMib) * 100));
   const running = status.state === "running";
@@ -64,6 +80,8 @@ export function OverviewTab({ server, status, logs, onCopyAddress, onOpenFolder,
         <div><span>メモリ圧力</span><strong>{memoryManagedByWindows ? "—" : `${memoryRatio}%`}</strong><small>{memoryManagedByWindows ? "WindowsとBDSが自動管理" : memoryRatio > 90 ? "割り当てとMod構成を見直してください" : "設定した上限に対する割合"}</small></div>
         <div><span>ローカル応答</span><strong>{latency}</strong><small>チャンク数はMinecraft共通APIがないため非表示</small></div>
       </section>
+
+      {javaModManagement ? <ModManagementSummaryCard state={modManagement} onOpen={() => onNavigate("extensions")} /> : null}
 
       <div className="overview-detail-grid">
       <section className="recent-panel">

@@ -12,9 +12,12 @@ mod extensions;
 mod game_adapter;
 mod invite;
 mod java;
+mod launch_observer;
 mod legacy_cleanup;
 mod migration;
+mod mod_management;
 mod models;
+mod modpack_import;
 mod palworld;
 mod ping;
 mod player_access;
@@ -23,6 +26,7 @@ mod playit_installer;
 mod process;
 mod profiles;
 mod protected_data;
+mod quarantine;
 mod server_diagnosis;
 mod server_files;
 mod settings;
@@ -517,6 +521,164 @@ fn check_extension_conflicts(
     let profile = state.store.lock().unwrap().get_server(&server_id)?;
     require_minecraft(&profile, "Mod／プラグイン競合チェック")?;
     extension_check::check(&profile)
+}
+
+#[tauri::command]
+async fn get_mod_management_state(
+    server_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<mod_management::ModManagementState> {
+    let profile = state.store.lock().unwrap().get_server(&server_id)?;
+    require_java_mod_management(&profile)?;
+    tokio::task::spawn_blocking(move || mod_management::get_or_create(&profile))
+        .await
+        .map_err(|_| AppError::Other("Mod管理状態のバックグラウンド処理に失敗しました".into()))?
+}
+
+#[tauri::command]
+async fn refresh_mod_management_state(
+    server_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<mod_management::ModManagementState> {
+    let profile = state.store.lock().unwrap().get_server(&server_id)?;
+    require_java_mod_management(&profile)?;
+    tokio::task::spawn_blocking(move || mod_management::refresh(&profile))
+        .await
+        .map_err(|_| AppError::Other("Mod管理状態のバックグラウンド処理に失敗しました".into()))?
+}
+
+#[tauri::command]
+async fn list_mod_launch_attempts(
+    server_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<Vec<launch_observer::LaunchAttempt>> {
+    let profile = state.store.lock().unwrap().get_server(&server_id)?;
+    require_java_mod_management(&profile)?;
+    tokio::task::spawn_blocking(move || launch_observer::read_attempts(&profile))
+        .await
+        .map_err(|_| AppError::Other("Mod起動履歴のバックグラウンド処理に失敗しました".into()))?
+}
+
+#[tauri::command]
+async fn list_mod_quarantine_operations(
+    server_id: String,
+    state: State<'_, AppState>,
+) -> AppResult<quarantine::QuarantineOverview> {
+    let profile = state.store.lock().unwrap().get_server(&server_id)?;
+    require_java_mod_management(&profile)?;
+    tokio::task::spawn_blocking(move || quarantine::list(&profile))
+        .await
+        .map_err(|_| AppError::Other("Mod隔離履歴のバックグラウンド処理に失敗しました".into()))?
+}
+
+#[tauri::command]
+async fn apply_mod_quarantine(
+    server_id: String,
+    selections: Vec<quarantine::QuarantineSelection>,
+    confirmation: String,
+    state: State<'_, AppState>,
+) -> AppResult<quarantine::QuarantineJournal> {
+    let _operation = state.server_operations.lock(&server_id).await;
+    if process::is_busy(&server_id, &state.processes, &state.stopping_servers) {
+        return Err(AppError::Validation(
+            "Mod隔離を行う前にサーバーの停止処理が完了していることを確認してください".into(),
+        ));
+    }
+    let profile = state.store.lock().unwrap().get_server(&server_id)?;
+    require_java_mod_management(&profile)?;
+    let backups_dir = state.backups_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        quarantine::apply(&profile, &backups_dir, selections, &confirmation)
+    })
+    .await
+    .map_err(|_| AppError::Other("Mod隔離のバックグラウンド処理に失敗しました".into()))?
+}
+
+#[tauri::command]
+async fn restore_mod_quarantine(
+    server_id: String,
+    operation_id: String,
+    confirmation: String,
+    state: State<'_, AppState>,
+) -> AppResult<quarantine::QuarantineJournal> {
+    let _operation = state.server_operations.lock(&server_id).await;
+    if process::is_busy(&server_id, &state.processes, &state.stopping_servers) {
+        return Err(AppError::Validation(
+            "Modを復元する前にサーバーの停止処理が完了していることを確認してください".into(),
+        ));
+    }
+    let profile = state.store.lock().unwrap().get_server(&server_id)?;
+    require_java_mod_management(&profile)?;
+    tokio::task::spawn_blocking(move || quarantine::restore(&profile, &operation_id, &confirmation))
+        .await
+        .map_err(|_| AppError::Other("Mod復元のバックグラウンド処理に失敗しました".into()))?
+}
+
+#[tauri::command]
+async fn set_mod_management_role(
+    server_id: String,
+    artifact_id: String,
+    role: String,
+    reason: Option<String>,
+    state: State<'_, AppState>,
+) -> AppResult<mod_management::ModManagementState> {
+    let profile = state.store.lock().unwrap().get_server(&server_id)?;
+    require_java_mod_management(&profile)?;
+    tokio::task::spawn_blocking(move || {
+        mod_management::set_role_override(&profile, artifact_id, role, reason)
+    })
+    .await
+    .map_err(|_| AppError::Other("Mod分類上書きのバックグラウンド処理に失敗しました".into()))?
+}
+
+#[tauri::command]
+async fn export_client_mod_manifest(
+    server_id: String,
+    destination: String,
+    state: State<'_, AppState>,
+) -> AppResult<usize> {
+    let profile = state.store.lock().unwrap().get_server(&server_id)?;
+    require_java_mod_management(&profile)?;
+    tokio::task::spawn_blocking(move || {
+        mod_management::export_client_manifest(&profile, Path::new(&destination))
+    })
+    .await
+    .map_err(|_| {
+        AppError::Other("クライアント用マニフェストのバックグラウンド処理に失敗しました".into())
+    })?
+}
+
+#[tauri::command]
+async fn analyze_modpack_source(
+    source: String,
+    target: Option<modpack_import::ModpackAnalyzeTarget>,
+) -> AppResult<modpack_import::ModpackPlan> {
+    tokio::task::spawn_blocking(move || modpack_import::analyze(Path::new(&source), target))
+        .await
+        .map_err(|_| AppError::Other("Modパック解析のバックグラウンド処理に失敗しました".into()))?
+}
+
+#[tauri::command]
+async fn create_modpack_configuration(
+    source: String,
+    destination: String,
+    plan_fingerprint: String,
+    confirmation: String,
+    target: Option<modpack_import::ModpackAnalyzeTarget>,
+) -> AppResult<modpack_import::ModpackCreateResult> {
+    tokio::task::spawn_blocking(move || {
+        modpack_import::create_new_configuration(
+            Path::new(&source),
+            Path::new(&destination),
+            &plan_fingerprint,
+            &confirmation,
+            target,
+        )
+    })
+    .await
+    .map_err(|_| {
+        AppError::Other("新規Modパック構成作成のバックグラウンド処理に失敗しました".into())
+    })?
 }
 
 #[tauri::command]
@@ -2487,6 +2649,12 @@ fn analyze_server(
         .cloned()
         .unwrap_or_default();
     let mut report = server_diagnosis::analyze(&profile, &logs, !running);
+    if let Some(issue) = launch_observer::latest_diagnosis(&profile)? {
+        if issue.severity == "error" {
+            report.healthy = false;
+        }
+        report.issues.insert(0, issue);
+    }
     if let Some(owner) = servers
         .iter()
         .find(|server| server.id != server_id && server.port == profile.port)
@@ -4220,6 +4388,16 @@ fn require_minecraft(profile: &ServerProfile, feature: &str) -> AppResult<()> {
     }
 }
 
+fn require_java_mod_management(profile: &ServerProfile) -> AppResult<()> {
+    require_minecraft(profile, "Mod管理状態")?;
+    if profile.edition() != "java" {
+        return Err(AppError::Validation(
+            "Mod管理V2はMinecraft Java Editionサーバー専用です".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_create_input(input: &CreateServerInput) -> AppResult<()> {
     let name = input.name.trim();
     if name.is_empty() || name.chars().count() > 64 {
@@ -4873,6 +5051,16 @@ pub fn run() {
             get_automation_settings,
             save_automation_settings,
             check_extension_conflicts,
+            get_mod_management_state,
+            refresh_mod_management_state,
+            list_mod_launch_attempts,
+            list_mod_quarantine_operations,
+            apply_mod_quarantine,
+            restore_mod_quarantine,
+            set_mod_management_role,
+            export_client_mod_manifest,
+            analyze_modpack_source,
+            create_modpack_configuration,
             export_server_migration,
             inspect_server_migration,
             restore_server_migration,

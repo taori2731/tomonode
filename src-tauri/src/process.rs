@@ -16,6 +16,7 @@ use crate::{
     bedrock,
     error::{AppError, AppResult},
     game_adapter::GameAdapter,
+    launch_observer::LaunchObserver,
     models::{LogEntry, RuntimeStatus, ServerProfile},
     palworld,
     ping::{ping_bedrock_server, ping_local_server},
@@ -69,6 +70,9 @@ pub struct ManagedProcess {
     pub pid: u32,
     pub port: u16,
     pub transport: String,
+    /// M5 launch observation is only present for Java loaders. Native
+    /// Bedrock/Palworld process handling remains unchanged.
+    observer: Option<LaunchObserver>,
     system: System,
     last_metrics_query: Option<Instant>,
     metrics_log_start_index: Option<usize>,
@@ -92,13 +96,26 @@ impl Drop for ManagedProcess {
 }
 
 fn reap_finished(map: &mut HashMap<String, ManagedProcess>) {
-    map.retain(|_, process| !matches!(process.child.try_wait(), Ok(Some(_))));
+    map.retain(|_, process| match process.child.try_wait() {
+        Ok(Some(status)) => {
+            if let Some(observer) = &process.observer {
+                observer.mark_exit(status);
+            }
+            false
+        }
+        Ok(None) | Err(_) => true,
+    });
 }
 
 fn reap_finished_server(map: &mut HashMap<String, ManagedProcess>, server_id: &str) {
-    let finished = map
-        .get_mut(server_id)
-        .is_some_and(|process| matches!(process.child.try_wait(), Ok(Some(_))));
+    let finished = map.get_mut(server_id).and_then(|process| {
+        process.child.try_wait().ok().flatten().map(|status| {
+            if let Some(observer) = &process.observer {
+                observer.mark_exit(status);
+            }
+            true
+        })
+    }) == Some(true);
     if finished {
         map.remove(server_id);
     }
@@ -253,36 +270,80 @@ pub fn start(
 
     hide_console_window(&mut command);
 
-    let mut unregistered_child = UnregisteredChild::new(command.spawn()?);
+    // Create the bounded `starting` record immediately before CreateProcess.
+    // The observer is independent of the process-map lock and is absent for
+    // native Bedrock/Palworld launches.
+    let observer = LaunchObserver::begin(profile)?;
+    let mut unregistered_child = match command.spawn() {
+        Ok(child) => UnregisteredChild::new(child),
+        Err(error) => {
+            if let Some(observer) = &observer {
+                observer.mark_spawn_failed(&error.to_string());
+            }
+            return Err(error.into());
+        }
+    };
     // Keep the no-write/no-delete verification handle alive through spawn so
     // the file cannot be replaced after signature verification but before
     // CreateProcess opens it.
     drop(verified_bedrock);
     let pid = unregistered_child.child_mut().id();
-    let stdin = unregistered_child
-        .child_mut()
-        .stdin
-        .take()
-        .ok_or_else(|| AppError::Other("サーバーの標準入力を取得できません".into()))?;
-    let stdout = unregistered_child
-        .child_mut()
-        .stdout
-        .take()
-        .ok_or_else(|| AppError::Other("サーバーログを取得できません".into()))?;
-    let stderr = unregistered_child
-        .child_mut()
-        .stderr
-        .take()
-        .ok_or_else(|| AppError::Other("サーバーエラー出力を取得できません".into()))?;
+    let stdin = match unregistered_child.child_mut().stdin.take() {
+        Some(value) => value,
+        None => {
+            if let Some(observer) = &observer {
+                observer.mark_spawn_failed("サーバーの標準入力を取得できません");
+            }
+            return Err(AppError::Other("サーバーの標準入力を取得できません".into()));
+        }
+    };
+    let stdout = match unregistered_child.child_mut().stdout.take() {
+        Some(value) => value,
+        None => {
+            if let Some(observer) = &observer {
+                observer.mark_spawn_failed("サーバーログを取得できません");
+            }
+            return Err(AppError::Other("サーバーログを取得できません".into()));
+        }
+    };
+    let stderr = match unregistered_child.child_mut().stderr.take() {
+        Some(value) => value,
+        None => {
+            if let Some(observer) = &observer {
+                observer.mark_spawn_failed("サーバーエラー出力を取得できません");
+            }
+            return Err(AppError::Other("サーバーエラー出力を取得できません".into()));
+        }
+    };
 
-    spawn_log_reader(profile.id.clone(), stdout, logs.clone(), "INFO");
-    spawn_log_reader(profile.id.clone(), stderr, logs.clone(), "ERROR");
+    spawn_log_reader(
+        profile.id.clone(),
+        stdout,
+        logs.clone(),
+        "INFO",
+        observer.clone(),
+    );
+    spawn_log_reader(
+        profile.id.clone(),
+        stderr,
+        logs.clone(),
+        "ERROR",
+        observer.clone(),
+    );
 
     let mut system = System::new();
     system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
     let session_log_start_index = logs.lock().unwrap().get(&profile.id).map_or(0, Vec::len);
     #[cfg(windows)]
-    let job_handle = assign_job(pid)?;
+    let job_handle = match assign_job(pid) {
+        Ok(value) => value,
+        Err(error) => {
+            if let Some(observer) = &observer {
+                observer.mark_spawn_failed(&error.to_string());
+            }
+            return Err(error);
+        }
+    };
     // All fallible setup has completed; ProcessMap becomes the sole child owner.
     let child = unregistered_child.commit();
     process_guard.insert(
@@ -294,6 +355,7 @@ pub fn start(
             pid,
             port: profile.port,
             transport: profile.network_transport().into(),
+            observer,
             system,
             last_metrics_query: None,
             metrics_log_start_index: None,
@@ -347,7 +409,10 @@ pub async fn stop(
             .get_mut(server_id)
             .ok_or(AppError::NotRunning)?;
         force_terminate(process)?;
-        process.child.wait()?;
+        let status = process.child.wait()?;
+        if let Some(observer) = &process.observer {
+            observer.mark_exit(status);
+        }
         stopping_guard.remove(server_id);
         drop(stopping_guard);
         let _ = app.emit("server-status", (server_id, "stopped"));
@@ -399,7 +464,10 @@ pub async fn stop(
                 return Ok(());
             };
             match process.child.try_wait() {
-                Ok(Some(_)) => {
+                Ok(Some(status)) => {
+                    if let Some(observer) = &process.observer {
+                        observer.mark_exit(status);
+                    }
                     stopping_guard.remove(server_id);
                     true
                 }
@@ -438,7 +506,10 @@ pub fn send_command(server_id: &str, value: &str, processes: &ProcessMap) -> App
 fn stopping_status(profile: &ServerProfile, stopping: &StoppingMap) -> Option<RuntimeStatus> {
     let mut stopping_guard = stopping.lock().unwrap();
     let process = stopping_guard.get_mut(&profile.id)?;
-    if matches!(process.child.try_wait(), Ok(Some(_))) {
+    if let Ok(Some(status)) = process.child.try_wait() {
+        if let Some(observer) = &process.observer {
+            observer.mark_exit(status);
+        }
         stopping_guard.remove(&profile.id);
         Some(stopped_status(profile))
     } else {
@@ -466,12 +537,48 @@ pub fn runtime_status(
         return stopping_status(profile, stopping).unwrap_or_else(|| stopped_status(profile));
     };
 
-    if process.child.try_wait().ok().flatten().is_some() {
+    if let Ok(Some(status)) = process.child.try_wait() {
+        if let Some(observer) = &process.observer {
+            observer.mark_exit(status);
+        }
         guard.remove(&profile.id);
         return RuntimeStatus {
             state: "crashed".into(),
             ..stopped_status(profile)
         };
+    }
+
+    let observer_ready = process
+        .observer
+        .as_ref()
+        .is_some_and(LaunchObserver::is_ready);
+    let observer_failed = process
+        .observer
+        .as_ref()
+        .is_some_and(LaunchObserver::is_failed);
+    // A loader fatal is never force-killed by the observer.  Request one
+    // graceful stop through the existing stdin path; the normal stop command
+    // and stopping registry continue to own all later lifecycle transitions.
+    if observer_failed
+        && process
+            .observer
+            .as_ref()
+            .is_some_and(LaunchObserver::take_safe_stop_request)
+    {
+        let _ = process.stdin.write_all(b"stop\n");
+        let _ = process.stdin.flush();
+    }
+    if observer_failed {
+        process.cached_status = Some(RuntimeStatus {
+            state: "crashed".into(),
+            ..stopped_status(profile)
+        });
+        process.last_status_probe = Some(Instant::now());
+        process.status_probe_in_flight = false;
+        return process
+            .cached_status
+            .clone()
+            .unwrap_or_else(|| stopped_status(profile));
     }
 
     let pid = process.pid;
@@ -514,7 +621,9 @@ pub fn runtime_status(
         GameAdapter::MinecraftJava => ping_local_server(profile.port),
         GameAdapter::Palworld => None,
     };
-    let state = if ping.is_some() {
+    let state = if observer_failed {
+        "crashed"
+    } else if observer_ready || ping.is_some() {
         "running"
     } else {
         "starting"
@@ -842,10 +951,14 @@ fn spawn_log_reader<R: std::io::Read + Send + 'static>(
     reader: R,
     logs: LogMap,
     fallback_level: &'static str,
+    observer: Option<LaunchObserver>,
 ) {
     thread::spawn(move || {
         for line in BufReader::new(reader).lines().map_while(Result::ok) {
             let level = parse_level(&line).unwrap_or(fallback_level).to_string();
+            if let Some(observer) = &observer {
+                observer.observe_line(&level, &line);
+            }
             let entry = LogEntry {
                 timestamp: Local::now().format("%H:%M:%S").to_string(),
                 level,
@@ -1112,6 +1225,7 @@ mod tests {
             pid,
             port,
             transport: "tcp".into(),
+            observer: None,
             system: System::new(),
             last_metrics_query: None,
             metrics_log_start_index: None,

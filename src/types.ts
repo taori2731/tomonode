@@ -325,6 +325,206 @@ export interface ExtensionInfo {
   clientRequirement: string;
   manageable: boolean;
 }
+
+export type ModRole = "server-only" | "client-only" | "both" | "client-optional" | "unknown" | string;
+export interface ModManagementTarget {
+  game: string;
+  minecraftVersion: string;
+  loader: string;
+  loaderVersion?: string;
+  javaMajor: number;
+}
+export interface ModManagementOrigin {
+  provider: string;
+  projectId?: string;
+  versionId?: string;
+  versionNumber?: string;
+  source?: string;
+  dependency?: boolean;
+  manifestPath?: string;
+}
+export interface ModManagementArtifact {
+  artifactId: string;
+  fileName: string;
+  kind: string;
+  active: boolean;
+  present: boolean;
+  topLevelMods: Array<Record<string, unknown>>;
+  embedded: Array<Record<string, unknown>>;
+  role: ModRole;
+  roleEvidence: string[];
+  dependencies: Array<Record<string, unknown>>;
+  origin: ModManagementOrigin;
+}
+export interface ModManagementDesiredSets {
+  server: string[];
+  client: string[];
+  optionalClient: string[];
+}
+export interface ModManagementState {
+  schemaVersion: number;
+  serverId: string;
+  target: ModManagementTarget;
+  desiredSets: ModManagementDesiredSets;
+  roleOverrides: Array<Record<string, unknown>>;
+  artifacts: ModManagementArtifact[];
+  lastSuccessfulLaunch?: string | null;
+  updatedAt: string;
+}
+export interface ModLaunchLogEvidence {
+  timestamp: string;
+  level: string;
+  message: string;
+}
+export interface ModLaunchQuarantineCandidate {
+  fileName?: string;
+  modId?: string;
+  reason: string;
+}
+export interface ModLaunchAttempt {
+  schemaVersion: number;
+  attemptId: string;
+  serverId: string;
+  state: "starting" | "ready" | "failed" | "exited" | string;
+  startedAt: string;
+  readyAt?: string | null;
+  endedAt?: string | null;
+  target: ModManagementTarget;
+  logEvidence: ModLaunchLogEvidence[];
+  fatalCode?: string | null;
+  warningCodes: string[];
+  quarantineCandidates: ModLaunchQuarantineCandidate[];
+  exitCode?: number | null;
+}
+export interface ModQuarantineSelection {
+  relativePath: string;
+  sha256: string;
+}
+export interface ModQuarantineCandidate {
+  relativePath: string;
+  fileName: string;
+  sha256: string;
+  sizeBytes: number;
+  valid: boolean;
+  reasons: string[];
+}
+export interface ModQuarantineItem {
+  sourceRelativePath: string;
+  quarantineRelativePath: string;
+  fileName: string;
+  sha256: string;
+  moved: boolean;
+  restored: boolean;
+}
+export interface ModQuarantineOperation {
+  schemaVersion: number;
+  operationId: string;
+  serverId: string;
+  status: string;
+  stage: string;
+  selected: ModQuarantineItem[];
+  backupId?: string | null;
+  plannedAt: string;
+  updatedAt: string;
+  inventoryBeforeFingerprint?: string | null;
+  inventoryAfterFingerprint?: string | null;
+  launchValidation: {
+    attemptId?: string | null;
+    startedAt?: string | null;
+    readyAt?: string | null;
+    outcome?: string | null;
+    failureCode?: string | null;
+  };
+  lastError?: string | null;
+  recoveryGuidance: string;
+}
+export interface ModQuarantineOverview {
+  schemaVersion: number;
+  candidates: ModQuarantineCandidate[];
+  operations: ModQuarantineOperation[];
+}
+export interface ModpackAnalyzeTarget {
+  game: string;
+  minecraftVersion: string;
+  loader: string;
+  loaderVersion?: string;
+  javaMajor: number;
+}
+export interface ModpackAcquisition {
+  method: string;
+  source: string;
+  requiresNetwork: boolean;
+  instructions?: string;
+}
+export interface ModpackDependency {
+  id: string;
+  required: boolean;
+  side: string;
+  versionRange?: string;
+  resolved: boolean;
+}
+export interface ModpackArtifactPlan {
+  artifactId: string;
+  fileName: string;
+  sourceRelativePath: string;
+  sizeBytes: number;
+  sha256?: string;
+  role: ModRole;
+  roleEvidence: string[];
+  provider: string;
+  projectId?: string;
+  fileId?: string;
+  versionId?: string;
+  versionNumber?: string;
+  acquisition: ModpackAcquisition;
+  redistributable: boolean;
+  stageEligible: boolean;
+  unresolved: boolean;
+  dependencies: ModpackDependency[];
+}
+export interface ModpackUnresolvedDependency {
+  id: string;
+  required: boolean;
+  side: string;
+  reason: string;
+  provider?: string;
+  projectId?: string;
+  fileId?: string;
+}
+export interface ModpackRedistribution {
+  subject: string;
+  provider: string;
+  allowed: boolean;
+  reason: string;
+  acquisition: ModpackAcquisition;
+}
+export interface ModpackPlan {
+  schemaVersion: number;
+  sourceKind: string;
+  sourceName: string;
+  target: ModpackAnalyzeTarget;
+  artifacts: ModpackArtifactPlan[];
+  unresolvedDependencies: ModpackUnresolvedDependency[];
+  overrides: string[];
+  configFiles: string[];
+  redistribution: ModpackRedistribution[];
+  existingServerApply: { enabled: boolean; reason: string };
+  safety: {
+    readOnlyAnalysis: boolean;
+    archiveLimitsChecked: boolean;
+    unknownPlacementBlocked: boolean;
+    sourceUnchanged: boolean;
+    networkUsed: boolean;
+  };
+  planFingerprint: string;
+}
+export interface ModpackCreateResult {
+  planFingerprint: string;
+  stagedArtifacts: number;
+  excludedArtifacts: number;
+  stateCreated: boolean;
+  destinationName: string;
+}
 export interface ExtensionSearchHit {
   projectId: string;
   title: string;

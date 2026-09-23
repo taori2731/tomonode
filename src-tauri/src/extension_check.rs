@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     fs::File,
     io::{Cursor, Read, Seek},
@@ -17,6 +18,16 @@ use crate::{
 #[derive(Default)]
 struct Metadata {
     id: Option<String>,
+    /// IDs declared by this archive's own metadata.  These are the only IDs
+    /// that participate in top-level duplicate detection.
+    top_level_ids: Vec<String>,
+    /// IDs declared by archives contained in META-INF/jarjar/.  They are
+    /// available for dependency resolution, but are not independent active
+    /// files and therefore must not be counted as top-level duplicates.
+    embedded_ids: Vec<String>,
+    /// Flattened IDs retained for the existing inspection tests and internal
+    /// compatibility.  New logic must use `top_level_ids` and `embedded_ids`
+    /// so that provenance is not lost.
     provided_ids: Vec<String>,
     minecraft: Option<String>,
     loader: Option<String>,
@@ -61,18 +72,25 @@ pub fn check(profile: &ServerProfile) -> AppResult<ExtensionCheckReport> {
             .to_string_lossy()
             .to_string();
         let metadata = inspect_archive(path, kind);
-        let provided_ids = if metadata.provided_ids.is_empty() {
+        let top_level_ids = if metadata.top_level_ids.is_empty() {
             metadata.id.clone().into_iter().collect::<Vec<_>>()
         } else {
-            metadata.provided_ids.clone()
+            metadata.top_level_ids.clone()
         };
-        for id in provided_ids {
+        for id in top_level_ids {
             let normalized = id.to_ascii_lowercase();
             present_ids.insert(normalized.clone());
             let files_for_id = ids.entry(normalized).or_default();
             if !files_for_id.iter().any(|value| value == &name) {
                 files_for_id.push(name.clone());
             }
+        }
+        // A bundled library is still present for dependency resolution, but
+        // it belongs to its parent artifact and is not another active mod
+        // file.  This is what prevents four parents bundling mixinextras (or
+        // two parents bundling geckolib) from producing false duplicates.
+        for id in &metadata.embedded_ids {
+            present_ids.insert(id.to_ascii_lowercase());
         }
         if let Some(loader) = metadata.loader.as_deref() {
             let expected = expected_loader(profile, kind);
@@ -249,9 +267,12 @@ fn inspect_zip<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str, depth: u
         };
         let nested_metadata = inspect_zip(&mut nested, kind, depth + 1);
         metadata.provided_ids.extend(nested_metadata.provided_ids);
+        metadata.embedded_ids.extend(nested_metadata.top_level_ids);
+        metadata.embedded_ids.extend(nested_metadata.embedded_ids);
         metadata.dependencies.extend(nested_metadata.dependencies);
     }
     metadata.provided_ids = unique_ids(metadata.provided_ids);
+    metadata.embedded_ids = unique_ids(metadata.embedded_ids);
     metadata.dependencies = unique_ids(metadata.dependencies);
     metadata
 }
@@ -310,8 +331,11 @@ fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str)
                 .get("id")
                 .and_then(|value| value.as_str())
                 .map(str::to_string);
+            let top_level_ids = id.clone().into_iter().collect::<Vec<_>>();
             return Metadata {
                 provided_ids: id.clone().into_iter().collect(),
+                top_level_ids,
+                embedded_ids: Vec::new(),
                 id,
                 minecraft: json.pointer("/depends/minecraft").and_then(version_value),
                 loader: Some("fabric".into()),
@@ -356,6 +380,7 @@ fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str)
                     .map(|value| value.as_str().trim().trim_matches(['\'', '"']).to_string())
             };
             let id = field("name").map(|value| value.to_ascii_lowercase());
+            let top_level_ids = id.clone().into_iter().collect::<Vec<_>>();
             let dependencies = field("depend")
                 .map(|value| {
                     value
@@ -369,6 +394,8 @@ fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str)
             return Metadata {
                 id: id.clone(),
                 provided_ids: id.into_iter().collect(),
+                top_level_ids,
+                embedded_ids: Vec::new(),
                 minecraft: field("api-version"),
                 loader: Some("paper".into()),
                 dependencies,
@@ -390,6 +417,7 @@ enum ForgeSection {
 fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
     let mut section = ForgeSection::Other;
     let mut id = None;
+    let mut top_level_ids = Vec::new();
     let mut minecraft = None;
     let mut dependencies = Vec::new();
     let mut dependency_id = None;
@@ -469,7 +497,14 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
         let key = key.trim();
         let parsed = toml_scalar(raw_value);
         match (section, key) {
-            (ForgeSection::Mods, "modId") if id.is_none() => id = parsed,
+            (ForgeSection::Mods, "modId") => {
+                if let Some(value) = parsed {
+                    if id.is_none() {
+                        id = Some(value.clone());
+                    }
+                    top_level_ids.push(value);
+                }
+            }
             (ForgeSection::Dependency, "modId") => dependency_id = parsed,
             (ForgeSection::Dependency, "mandatory") => {
                 dependency_mandatory = parsed
@@ -490,8 +525,11 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
         &mut minecraft,
     );
 
+    let top_level_ids = unique_ids(top_level_ids);
     Metadata {
-        provided_ids: id.clone().into_iter().collect(),
+        provided_ids: top_level_ids.clone(),
+        top_level_ids,
+        embedded_ids: Vec::new(),
         id,
         minecraft,
         loader: Some(loader.into()),
@@ -573,11 +611,175 @@ fn version_value(value: &serde_json::Value) -> Option<String> {
             .map(str::to_string)
     })
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NumericVersion(Vec<u64>);
+
+#[derive(Clone, Debug)]
+struct VersionRange {
+    lower: Option<NumericVersion>,
+    lower_inclusive: bool,
+    upper: Option<NumericVersion>,
+    upper_inclusive: bool,
+}
+
 fn version_matches(requirement: &str, actual: &str) -> bool {
-    requirement.contains(actual)
+    let requirement = requirement.trim();
+    if requirement == "*" || requirement.eq_ignore_ascii_case("any") {
+        return true;
+    }
+
+    // Forge and NeoForge commonly use Maven's interval syntax.  Evaluate it
+    // before the legacy string-compatible path so that a range such as
+    // [1.20,1.21) does not accidentally become a substring match.
+    if let Some(ranges) = parse_maven_ranges(requirement) {
+        let Some(actual) = parse_numeric_version(actual) else {
+            return false;
+        };
+        return ranges
+            .iter()
+            .any(|range| version_range_matches(range, &actual));
+    }
+
+    // Keep the existing comparator forms accepted by the checker.  They are
+    // not Maven intervals, but some generated metadata and existing tests use
+    // them (for example, >=1.21.11).
+    let comparator = if let Some(value) = requirement.strip_prefix(">=") {
+        Some((">=", value))
+    } else if let Some(value) = requirement.strip_prefix("<=") {
+        Some(("<=", value))
+    } else if let Some(value) = requirement.strip_prefix('>') {
+        Some((">", value))
+    } else {
+        requirement.strip_prefix('<').map(|value| ("<", value))
+    };
+    if let Some((operator, bound)) = comparator {
+        let (Some(actual), Some(bound)) = (
+            parse_numeric_version(actual),
+            parse_numeric_version(bound.trim()),
+        ) else {
+            return false;
+        };
+        return match compare_numeric_versions(&actual, &bound) {
+            Ordering::Less => matches!(operator, "<=" | "<"),
+            Ordering::Equal => matches!(operator, ">=" | "<="),
+            Ordering::Greater => matches!(operator, ">=" | ">"),
+        };
+    }
+
+    // Fabric's simple dependency value is often a fixed version or a
+    // major/minor prefix.  Preserve the old behavior where 1.20 matches
+    // 1.20.1, while a plain fixed 1.20.1 does not match 1.20.10.
+    requirement == actual
+        || requirement.contains(actual)
         || actual.starts_with(&format!("{requirement}."))
-        || requirement == "*"
-        || requirement.eq_ignore_ascii_case("any")
+}
+
+fn parse_maven_ranges(requirement: &str) -> Option<Vec<VersionRange>> {
+    let bytes = requirement.as_bytes();
+    let mut cursor = 0;
+    let mut ranges = Vec::new();
+
+    while cursor < bytes.len() {
+        while cursor < bytes.len() && (bytes[cursor].is_ascii_whitespace() || bytes[cursor] == b',')
+        {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() {
+            break;
+        }
+
+        let open = bytes[cursor] as char;
+        if !matches!(open, '[' | '(') {
+            return None;
+        }
+        let close_offset = requirement[cursor + 1..].find(|value| value == ']' || value == ')')?;
+        let close = cursor + 1 + close_offset;
+        let close_marker = bytes[close] as char;
+        let body = &requirement[cursor + 1..close];
+
+        let range = if let Some((lower, upper)) = body.split_once(',') {
+            VersionRange {
+                lower: parse_range_bound(lower)?,
+                lower_inclusive: open == '[',
+                upper: parse_range_bound(upper)?,
+                upper_inclusive: close_marker == ']',
+            }
+        } else {
+            // Maven's single-version form is an exact match, e.g.
+            // [1.20.1]. Parentheses without a comma are not a valid exact
+            // range and are left to the legacy compatibility path.
+            if open != '[' || close_marker != ']' || body.trim().is_empty() {
+                return None;
+            }
+            let version = parse_numeric_version(body.trim())?;
+            VersionRange {
+                lower: Some(version.clone()),
+                lower_inclusive: true,
+                upper: Some(version),
+                upper_inclusive: true,
+            }
+        };
+        ranges.push(range);
+        cursor = close + 1;
+    }
+
+    (!ranges.is_empty()).then_some(ranges)
+}
+
+fn parse_range_bound(value: &str) -> Option<Option<NumericVersion>> {
+    let value = value.trim();
+    if value.is_empty() {
+        Some(None)
+    } else {
+        parse_numeric_version(value).map(Some)
+    }
+}
+
+fn parse_numeric_version(value: &str) -> Option<NumericVersion> {
+    let core = value.trim().split(['-', '+']).next()?.trim();
+    if core.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for part in core.split('.') {
+        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        parts.push(part.parse::<u64>().ok()?);
+    }
+    Some(NumericVersion(parts))
+}
+
+fn compare_numeric_versions(left: &NumericVersion, right: &NumericVersion) -> Ordering {
+    let length = left.0.len().max(right.0.len());
+    for index in 0..length {
+        let left_part = left.0.get(index).copied().unwrap_or_default();
+        let right_part = right.0.get(index).copied().unwrap_or_default();
+        match left_part.cmp(&right_part) {
+            Ordering::Equal => {}
+            ordering => return ordering,
+        }
+    }
+    Ordering::Equal
+}
+
+fn version_range_matches(range: &VersionRange, actual: &NumericVersion) -> bool {
+    if let Some(lower) = &range.lower {
+        match compare_numeric_versions(actual, lower) {
+            Ordering::Less => return false,
+            Ordering::Equal if !range.lower_inclusive => return false,
+            Ordering::Equal | Ordering::Greater => {}
+        }
+    }
+    if let Some(upper) = &range.upper {
+        match compare_numeric_versions(actual, upper) {
+            Ordering::Greater => return false,
+            Ordering::Equal if !range.upper_inclusive => return false,
+            Ordering::Equal | Ordering::Less => {}
+        }
+    }
+    true
 }
 fn built_in_dependency(value: &str) -> bool {
     matches!(
@@ -629,12 +831,201 @@ mod tests {
         writer.finish().unwrap().into_inner()
     }
 
+    fn forge_toml(
+        ids: &[&str],
+        dependency: Option<&str>,
+        minecraft_version: Option<&str>,
+    ) -> String {
+        let mut value = String::new();
+        for id in ids {
+            value.push_str(&format!("[[mods]]\nmodId = \"{id}\"\n\n"));
+        }
+        if let Some(dependency) = dependency {
+            let owner = ids.first().copied().unwrap_or("example");
+            value.push_str(&format!(
+                "[[dependencies.{owner}]]\nmodId = \"{dependency}\"\nmandatory = true\nside = \"BOTH\"\n\n"
+            ));
+        }
+        if let Some(version) = minecraft_version {
+            let owner = ids.first().copied().unwrap_or("example");
+            value.push_str(&format!(
+                "[[dependencies.{owner}]]\nmodId = \"minecraft\"\nmandatory = true\nversionRange = \"{version}\"\nside = \"BOTH\"\n\n"
+            ));
+        }
+        value
+    }
+
+    fn forge_archive(
+        ids: &[&str],
+        embedded_ids: &[&str],
+        dependency: Option<&str>,
+        minecraft_version: Option<&str>,
+    ) -> Vec<u8> {
+        let metadata = forge_toml(ids, dependency, minecraft_version);
+        let mut entries = vec![("META-INF/mods.toml", metadata.into_bytes())];
+        let nested_archives = embedded_ids
+            .iter()
+            .map(|id| {
+                let nested_metadata = forge_toml(&[id], None, None);
+                let nested =
+                    zip_with_entries(&[("META-INF/mods.toml", nested_metadata.as_bytes())]);
+                let name = format!("META-INF/jarjar/{id}.jar");
+                (name, nested)
+            })
+            .collect::<Vec<_>>();
+        for (name, bytes) in &nested_archives {
+            entries.push((name.as_str(), bytes.clone()));
+        }
+        let entry_refs = entries
+            .iter()
+            .map(|(name, bytes)| (*name, bytes.as_slice()))
+            .collect::<Vec<_>>();
+        zip_with_entries(&entry_refs)
+    }
+
+    fn test_profile(root: &Path) -> ServerProfile {
+        ServerProfile {
+            id: "server".into(),
+            name: "Server".into(),
+            root_path: root.display().to_string(),
+            game_kind: "minecraft".into(),
+            server_type: "forge".into(),
+            minecraft_version: "1.20.1".into(),
+            distribution_build: Some("1.20.1-47.4.10".into()),
+            launch_target: "run.bat".into(),
+            java_path: "java.exe".into(),
+            java_major: 17,
+            min_memory_mib: 1024,
+            max_memory_mib: 4096,
+            port: 25565,
+            eula_accepted_at: "test".into(),
+            pending_restart: false,
+            settings: BasicSettings::default(),
+            palworld_settings: None,
+            created_at: "test".into(),
+            updated_at: "test".into(),
+        }
+    }
+
+    fn test_root(label: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("msh-extension-{label}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("mods")).unwrap();
+        root
+    }
+
+    fn write_mod(root: &Path, name: &str, archive: Vec<u8>) {
+        std::fs::write(root.join("mods").join(name), archive).unwrap();
+    }
+
     #[test]
     fn version_match_is_conservative() {
         assert!(version_matches(">=1.21.11", "1.21.11"));
         assert!(version_matches("1.21", "1.21.11"));
         assert!(!version_matches("1.20.1", "1.21.11"));
     }
+
+    #[test]
+    fn forge_maven_ranges_honor_inclusive_and_exclusive_boundaries() {
+        assert!(version_matches("[1.20,1.21)", "1.20"));
+        assert!(version_matches("[1.20,1.21)", "1.20.1"));
+        assert!(!version_matches("[1.20,1.21)", "1.21"));
+        assert!(!version_matches("(1.20,1.21)", "1.20"));
+        assert!(version_matches("(1.20,1.21)", "1.20.1"));
+        assert!(!version_matches("(1.20,1.21)", "1.21"));
+        assert!(version_matches("[1.20,1.21]", "1.21"));
+    }
+
+    #[test]
+    fn forge_maven_open_ended_ranges_and_version_precision_work() {
+        assert!(version_matches("[1.20,)", "1.20"));
+        assert!(version_matches("[1.20,)", "1.20.1"));
+        assert!(version_matches("[1.20,)", "1.21.4"));
+        assert!(!version_matches("[1.20,)", "1.19.4"));
+        assert!(!version_matches("[1.20,1.20.1)", "1.20.1"));
+        assert!(version_matches("[1.20,1.20.1)", "1.20"));
+        assert!(version_matches("[1.20.1]", "1.20.1"));
+        assert!(!version_matches("[1.20.1]", "1.20"));
+    }
+
+    #[test]
+    fn forge_maven_multiple_ranges_are_an_or_expression() {
+        let requirement = "(,1.19],[1.20,1.21)";
+        assert!(version_matches(requirement, "1.19"));
+        assert!(!version_matches(requirement, "1.19.1"));
+        assert!(version_matches(requirement, "1.20.1"));
+        assert!(!version_matches(requirement, "1.21"));
+    }
+
+    #[test]
+    fn check_does_not_report_a_forge_version_range_that_contains_server_version() {
+        let root = test_root("minecraft-version-range-check");
+        write_mod(
+            &root,
+            "versioned.jar",
+            forge_archive(&["versioned"], &[], None, Some("[1.20,1.21)")),
+        );
+
+        let report = check(&test_profile(&root)).unwrap();
+        assert!(!report.blocking);
+        assert!(
+            !report
+                .items
+                .iter()
+                .any(|item| item.code == "minecraft-version")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires MSH_EXTENSION_CHECK_SERVER_ROOT and only reads that server root"]
+    fn read_only_acceptance_check_for_configured_server_root() {
+        let root = PathBuf::from(
+            std::env::var_os("MSH_EXTENSION_CHECK_SERVER_ROOT")
+                .expect("MSH_EXTENSION_CHECK_SERVER_ROOT must point to a server root"),
+        );
+        assert!(
+            root.is_dir(),
+            "MSH_EXTENSION_CHECK_SERVER_ROOT is not a directory: {}",
+            root.display()
+        );
+
+        let mut profile = test_profile(&root);
+        profile.minecraft_version = std::env::var("MSH_EXTENSION_CHECK_MINECRAFT_VERSION")
+            .unwrap_or_else(|_| "1.20.1".into());
+        profile.server_type =
+            std::env::var("MSH_EXTENSION_CHECK_SERVER_TYPE").unwrap_or_else(|_| "forge".into());
+
+        // `check` only enumerates and reads the configured root.  It does not
+        // start the server or mutate Mods, worlds, settings, backups, or DBs.
+        let report = check(&profile).expect("read-only extension check should succeed");
+        eprintln!(
+            "MSH extension check result:\n{}",
+            serde_json::to_string_pretty(&report).expect("report should serialize")
+        );
+
+        for finding in report
+            .items
+            .iter()
+            .filter(|item| item.code == "duplicate-id")
+        {
+            assert_eq!(finding.severity, "error");
+            assert!(
+                finding.files.len() >= 2,
+                "duplicate-id finding must list every conflicting file: {finding:?}"
+            );
+            assert!(
+                finding.detail.contains("ID"),
+                "duplicate-id finding must include the duplicated ID: {finding:?}"
+            );
+            eprintln!(
+                "duplicate-id: {} ({})",
+                finding.detail,
+                finding.files.join(", ")
+            );
+        }
+    }
+
     #[test]
     fn built_ins_are_not_reported_missing() {
         assert!(built_in_dependency("minecraft"));
@@ -716,7 +1107,132 @@ side = "BOTH"
                 .iter()
                 .any(|value| value == "puzzlesaccessapi")
         );
+        assert_eq!(metadata.top_level_ids, vec!["puzzleslib"]);
+        assert_eq!(metadata.embedded_ids, vec!["puzzlesaccessapi"]);
         assert_eq!(metadata.dependencies, vec!["puzzlesaccessapi"]);
+    }
+
+    #[test]
+    fn common_embedded_libraries_are_not_top_level_duplicates() {
+        let root = test_root("embedded-common-libraries");
+        for index in 0..4 {
+            let id = format!("mixin_parent_{index}");
+            let archive = forge_archive(&[id.as_str()], &["mixinextras"], None, None);
+            write_mod(&root, &format!("{id}.jar"), archive);
+        }
+        for index in 0..2 {
+            let id = format!("gecko_parent_{index}");
+            let archive = forge_archive(&[id.as_str()], &["geckolib"], None, None);
+            write_mod(&root, &format!("{id}.jar"), archive);
+        }
+
+        let report = check(&test_profile(&root)).unwrap();
+        assert!(
+            !report.blocking,
+            "embedded libraries must not block: {report:?}"
+        );
+        assert!(!report.items.iter().any(|item| item.code == "duplicate-id"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn top_level_and_embedded_same_id_are_not_duplicates() {
+        let root = test_root("top-level-and-embedded");
+        write_mod(
+            &root,
+            "geckolib.jar",
+            forge_archive(&["geckolib"], &[], None, None),
+        );
+        write_mod(
+            &root,
+            "parent.jar",
+            forge_archive(&["parent"], &["geckolib"], None, None),
+        );
+
+        let report = check(&test_profile(&root)).unwrap();
+        assert!(!report.blocking);
+        assert!(!report.items.iter().any(|item| item.code == "duplicate-id"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_top_level_mod_ids_block() {
+        let root = test_root("duplicate-top-level");
+        write_mod(
+            &root,
+            "example-a.jar",
+            forge_archive(&["example"], &[], None, None),
+        );
+        write_mod(
+            &root,
+            "example-b.jar",
+            forge_archive(&["example"], &[], None, None),
+        );
+
+        let report = check(&test_profile(&root)).unwrap();
+        assert!(report.blocking);
+        let duplicate = report
+            .items
+            .iter()
+            .find(|item| item.code == "duplicate-id")
+            .expect("same top-level mod ID should be reported");
+        assert_eq!(duplicate.files.len(), 2);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bundled_embedded_dependency_satisfies_parent() {
+        let root = test_root("bundled-dependency");
+        write_mod(
+            &root,
+            "parent.jar",
+            forge_archive(&["parent"], &["mixinextras"], Some("mixinextras"), None),
+        );
+
+        let report = check(&test_profile(&root)).unwrap();
+        assert!(!report.blocking);
+        assert!(
+            !report
+                .items
+                .iter()
+                .any(|item| item.code == "missing-dependency")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn multiple_mods_in_one_jar_do_not_self_duplicate() {
+        let root = test_root("multi-mod-jar");
+        write_mod(
+            &root,
+            "multi.jar",
+            forge_archive(&["first", "second"], &[], None, None),
+        );
+
+        let report = check(&test_profile(&root)).unwrap();
+        assert!(!report.blocking);
+        assert!(!report.items.iter().any(|item| item.code == "duplicate-id"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn minecraft_version_mismatch_is_a_warning_only() {
+        let root = test_root("minecraft-version-warning");
+        write_mod(
+            &root,
+            "versioned.jar",
+            forge_archive(&["versioned"], &[], None, Some("[1.19.4]")),
+        );
+
+        let report = check(&test_profile(&root)).unwrap();
+        assert!(!report.blocking);
+        let finding = report
+            .items
+            .iter()
+            .find(|item| item.code == "minecraft-version")
+            .expect("version mismatch should remain visible");
+        assert_eq!(finding.severity, "warning");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

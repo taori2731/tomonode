@@ -71,4 +71,14 @@ describe("ブラウザ用バックエンド契約", () => {
     expect(plan.temporaryPath).toContain(`\\AppData\\Roaming\\${brand.legacyProductName}\\`);
     expect(plan.temporaryPath).not.toContain(`\\AppData\\Roaming\\${brand.productName}\\`);
   });
+
+  it("ブラウザデモはMod隔離・復元を実行済みと見せない", async () => {
+    const overview = await backend.listModQuarantineOperations("demo-paper");
+
+    expect(overview).toEqual({ schemaVersion: 1, candidates: [], operations: [] });
+    await expect(backend.applyModQuarantine("demo-paper", [{ relativePath: "example.jar", sha256: "a".repeat(64) }], "隔離を実行"))
+      .rejects.toThrow(/デスクトップアプリでのみ/);
+    await expect(backend.restoreModQuarantine("demo-paper", "operation-1", "復元を実行"))
+      .rejects.toThrow(/デスクトップアプリでのみ/);
+  });
 });
