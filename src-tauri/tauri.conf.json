@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Minecraft Server Hub",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "identifier": "local.minecraft-server-hub.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -31,10 +31,11 @@
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
     "resources": ["../docs/THIRD_PARTY_NOTICES.md", "../docs/licenses/MPL-2.0.txt"],
-    "icon": ["icons/icon.png"],
+    "icon": ["icons/icon.png", "icons/tomonode-windows.ico"],
     "windows": {
       "nsis": {
-        "installerIcon": "icons/icon.ico",
+        "installerIcon": "icons/tomonode-windows.ico",
+        "uninstallerIcon": "icons/tomonode-windows.ico",
         "installerHooks": "windows/installer-hooks.nsh",
         "languages": ["Japanese", "English"],
         "displayLanguageSelector": false,

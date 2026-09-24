@@ -662,13 +662,73 @@ describe(brand.productName, () => {
     expect(await screen.findByText("友達が参加できる状態になりました")).toBeInTheDocument();
   });
 
-  it("cycles the visual theme and persists the selection", async () => {
+  it("defaults an unset theme to dark and uses the matching titlebar logo", async () => {
     const { container } = render(<App />);
     await screen.findByRole("heading", { name: "Survival World" });
-    const button = screen.getByRole("button", { name: "テーマ: system" });
-    fireEvent.click(button);
-    await waitFor(() => expect(container.querySelector(".app")).toHaveAttribute("data-theme", "dark"));
+    const titlebar = document.querySelector<HTMLElement>(".titlebar")!;
+    const logo = () => titlebar.querySelector<HTMLImageElement>(".brand-mark");
+    expect(titlebar).toHaveAttribute("aria-label", brand.productName);
+    expect(within(titlebar).getByText(brand.productName)).toBeInTheDocument();
+    expect(container.querySelector(".app")).toHaveAttribute("data-theme", "dark");
+    expect(logo()).toHaveAttribute("src", "/assets/tomonode-icon-bg-black.png");
+    expect(logo()).toHaveAttribute("alt", "");
+    expect(logo()).toHaveAttribute("aria-hidden", "true");
     expect(localStorage.getItem("server-hub:theme:v1")).toBe("dark");
+
+    const button = screen.getByRole("button", { name: "テーマ: dark" });
+    fireEvent.click(button);
+    await waitFor(() => expect(container.querySelector(".app")).toHaveAttribute("data-theme", "light"));
+    expect(logo()).toHaveAttribute("src", "/assets/tomonode-icon-bg-white.png");
+    expect(localStorage.getItem("server-hub:theme:v1")).toBe("light");
+  });
+
+  it.each([
+    ["dark", "dark", "/assets/tomonode-icon-bg-black.png"],
+    ["light", "light", "/assets/tomonode-icon-bg-white.png"],
+  ] as const)("restores the saved %s theme and its logo", async (savedTheme, resolvedTheme, logoPath) => {
+    localStorage.setItem("server-hub:theme:v1", savedTheme);
+    const { container } = render(<App />);
+    await screen.findByRole("heading", { name: "Survival World" });
+    expect(container.querySelector(".app")).toHaveAttribute("data-theme", resolvedTheme);
+    expect(document.querySelector(".titlebar .brand-mark")).toHaveAttribute("src", logoPath);
+    expect(localStorage.getItem("server-hub:theme:v1")).toBe(savedTheme);
+  });
+
+  it("tracks operating system theme changes for the saved system mode and logo", async () => {
+    localStorage.setItem("server-hub:theme:v1", "system");
+    let systemDark = false;
+    const changeListeners = new Set<() => void>();
+    const mediaQueryList = {
+      get matches() { return systemDark; },
+      media: "(prefers-color-scheme: dark)",
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn((_type: string, listener: () => void) => changeListeners.add(listener)),
+      removeEventListener: vi.fn((_type: string, listener: () => void) => changeListeners.delete(listener)),
+      dispatchEvent: vi.fn(() => false),
+    } as unknown as MediaQueryList;
+    const matchMedia = vi.spyOn(window, "matchMedia").mockReturnValue(mediaQueryList);
+    try {
+      const { container } = render(<App />);
+      await screen.findByRole("heading", { name: "Survival World" });
+      expect(container.querySelector(".app")).toHaveAttribute("data-theme", "light");
+      expect(document.querySelector(".titlebar .brand-mark")).toHaveAttribute("src", "/assets/tomonode-icon-bg-white.png");
+      expect(changeListeners.size).toBe(1);
+
+      systemDark = true;
+      changeListeners.forEach((listener) => listener());
+      await waitFor(() => expect(container.querySelector(".app")).toHaveAttribute("data-theme", "dark"));
+      expect(document.querySelector(".titlebar .brand-mark")).toHaveAttribute("src", "/assets/tomonode-icon-bg-black.png");
+
+      systemDark = false;
+      changeListeners.forEach((listener) => listener());
+      await waitFor(() => expect(container.querySelector(".app")).toHaveAttribute("data-theme", "light"));
+      expect(document.querySelector(".titlebar .brand-mark")).toHaveAttribute("src", "/assets/tomonode-icon-bg-white.png");
+      expect(localStorage.getItem("server-hub:theme:v1")).toBe("system");
+    } finally {
+      matchMedia.mockRestore();
+    }
   });
 
   it("switches the app shell to English and persists the language", async () => {

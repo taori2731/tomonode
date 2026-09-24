@@ -85,7 +85,7 @@ export function createRefreshGuard(refresh: () => Promise<void>) {
 function useTheme() {
   const [mode, setMode] = useState<ThemeMode>(() => {
     const saved = localStorage.getItem("server-hub:theme:v1");
-    return saved === "dark" || saved === "light" || saved === "system" ? saved : "system";
+    return saved === "dark" || saved === "light" || saved === "system" ? saved : "dark";
   });
   const [systemDark, setSystemDark] = useState(() => matchMedia("(prefers-color-scheme: dark)").matches);
   const [appearance, setAppearance] = useState<AppearanceSettings>(readAppearance);
@@ -390,7 +390,7 @@ export function AppContent() {
     <div className="app" data-product-name={brand.productName} data-theme={theme.resolved} data-accent={theme.appearance.accent} data-icon-scale={theme.appearance.iconScale} style={customAccentStyle(theme.appearance)}>
       <ExternalLinkHandler onError={setError} />
       <header className="titlebar" aria-label={brand.productName}>
-        <div className="brand-mark" aria-hidden="true"><span /><span /><span /></div>
+        <img className="brand-mark" src={theme.resolved === "dark" ? "/assets/tomonode-icon-bg-black.png" : "/assets/tomonode-icon-bg-white.png"} alt="" aria-hidden="true" />
         <strong>{brand.productName}</strong>
         <span className="unofficial-label">{t("unofficial")}</span>
         <GlobalSearch servers={servers} onOpenServer={openServer} onSection={navigateSection} onSettings={openAppSettings} />

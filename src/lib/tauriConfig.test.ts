@@ -26,4 +26,15 @@ describe("Tauri native window branding compatibility", () => {
     );
     expect(installerHooks).not.toContain("DeleteReg");
   });
+
+  it("uses the fixed dark icon for Windows app and installer chrome", () => {
+    expect(tauriConfig.bundle.icon).toContain("icons/icon.png");
+    expect(tauriConfig.bundle.icon).toContain("icons/tomonode-windows.ico");
+    expect(tauriConfig.bundle.windows.nsis.installerIcon).toBe(
+      "icons/tomonode-windows.ico",
+    );
+    expect(tauriConfig.bundle.windows.nsis.uninstallerIcon).toBe(
+      "icons/tomonode-windows.ico",
+    );
+  });
 });
