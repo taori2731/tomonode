@@ -6,7 +6,7 @@ import cargoLock from "../../src-tauri/Cargo.lock?raw";
 import tauriConfig from "../../src-tauri/tauri.conf.json";
 import { backend } from "./backend";
 
-const releaseVersion = "0.5.3";
+const releaseVersion = "0.5.4";
 
 describe("release version alignment", () => {
   it("keeps app manifests and the browser demo on the same release candidate", async () => {
