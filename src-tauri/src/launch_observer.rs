@@ -624,10 +624,6 @@ fn fatal_code(line: &str) -> Option<&'static str> {
         Some("loading-failed")
     } else if line.contains("failed to create mod instance") {
         Some("failed-mod-instance")
-    } else if line.contains("invalid dist dedicated_server")
-        || (line.contains("attempted to load class") && line.contains("dedicated_server"))
-    {
-        Some("invalid-dist-client-only")
     } else if DUPLICATE_MOD.is_match(line) {
         Some("duplicate-mod")
     } else if MISSING_DEPENDENCY.is_match(line) {
@@ -642,7 +638,9 @@ fn fatal_code(line: &str) -> Option<&'static str> {
 }
 
 fn warning_code(line: &str) -> Option<&'static str> {
-    if (line.contains("loot table") || line.contains("loot_table"))
+    if is_invalid_dist_probe(line) {
+        Some("invalid-dist-probe")
+    } else if (line.contains("loot table") || line.contains("loot_table"))
         && (line.contains("warn")
             || line.contains("error")
             || line.contains("missing name")
@@ -658,6 +656,25 @@ fn warning_code(line: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn is_invalid_dist_probe(line: &str) -> bool {
+    let dedicated_server = line.contains("dedicated_server") || line.contains("dedicated server");
+    dedicated_server && (line.contains("invalid dist") || line.contains("attempted to load class"))
+}
+
+fn legacy_invalid_dist_probe_ready(attempt: &LaunchAttempt) -> bool {
+    attempt.state == "failed"
+        && attempt.fatal_code.as_deref() == Some("invalid-dist-client-only")
+        && attempt.exit_code == Some(0)
+        && (attempt.ready_at.is_some()
+            || attempt.log_evidence.iter().any(|entry| {
+                is_ready_marker(&attempt.target.loader, &entry.message.to_ascii_lowercase())
+            }))
+        && !attempt
+            .log_evidence
+            .iter()
+            .any(|entry| fatal_code(&entry.message.to_ascii_lowercase()).is_some())
 }
 
 static DUPLICATE_MOD: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
@@ -861,7 +878,8 @@ pub fn latest_diagnosis(profile: &ServerProfile) -> AppResult<Option<DiagnosisIs
     let Some(attempt) = read_attempts(profile)?.into_iter().next() else {
         return Ok(None);
     };
-    if attempt.state == "failed" {
+    let recovered_legacy_probe = legacy_invalid_dist_probe_ready(&attempt);
+    if attempt.state == "failed" && !recovered_legacy_probe {
         let code = attempt
             .fatal_code
             .clone()
@@ -906,18 +924,43 @@ pub fn latest_diagnosis(profile: &ServerProfile) -> AppResult<Option<DiagnosisIs
             suggest_restore: false,
         }));
     }
+    if recovered_legacy_probe {
+        return Ok(Some(DiagnosisIssue {
+            id: "launch-attempt-warning".into(),
+            severity: "warning".into(),
+            what_happened: "起動履歴にReady markerと終了コード0を確認しました。invalid distの行は起動失敗を示していません。".into(),
+            impact: "この起動はReadyへ到達した後、終了コード0で終了しています。現在サーバーが起動中かはプロセス状態で確認してください。".into(),
+            likely_cause: "以前の判定がMixinなどによる専用サーバー上のクラス探索ログを致命エラーとして扱っていました。".into(),
+            next_actions: vec!["今後、このクラス探索ログは警告として扱います。サーバーを起動する場合は通常どおり開始してください。".into()],
+            related_logs: attempt
+                .log_evidence
+                .iter()
+                .filter(|entry| {
+                    let lower = entry.message.to_ascii_lowercase();
+                    is_invalid_dist_probe(&lower)
+                        || is_ready_marker(&attempt.target.loader, &lower)
+                })
+                .map(|entry| format!("{} {}", entry.level, entry.message))
+                .take(8)
+                .collect(),
+            suggest_restore: false,
+        }));
+    }
     if matches!(attempt.state.as_str(), "ready" | "exited") && !attempt.warning_codes.is_empty() {
         return Ok(Some(DiagnosisIssue {
             id: "launch-attempt-warning".into(),
             severity: "warning".into(),
-            what_happened: format!("Ready後もローダー警告があります: {}", attempt.warning_codes.join(", ")),
-            impact: "サーバーは起動成功として扱っていますが、一部のLoot Tableや非推奨APIが影響する可能性があります。".into(),
+            what_happened: format!("サーバーはReadyに到達しました。起動履歴にローダー警告があります: {}", attempt.warning_codes.join(", ")),
+            impact: "サーバーは起動成功として扱っています。一部のMod読み込み検査やLoot Table、非推奨APIに関するログを確認してください。".into(),
             likely_cause: "起動履歴に記録された非致命警告を確認してください。".into(),
             next_actions: vec!["対応版のMod／プラグインを配布元で確認し、変更前にバックアップしてください。".into()],
             related_logs: attempt
                 .log_evidence
                 .iter()
-                .filter(|entry| entry.level.eq_ignore_ascii_case("WARN"))
+                .filter(|entry| {
+                    entry.level.eq_ignore_ascii_case("WARN")
+                        || is_invalid_dist_probe(&entry.message.to_ascii_lowercase())
+                })
                 .map(|entry| format!("{} {}", entry.level, entry.message))
                 .take(8)
                 .collect(),
@@ -1187,6 +1230,126 @@ mod tests {
             classify_loader_line("paper", "[Server thread/WARN]: Deprecated API used", true),
             LoaderObservation::Warning("deprecated-api")
         );
+    }
+
+    #[test]
+    fn invalid_dist_mixin_probes_before_and_after_ready_are_non_fatal() {
+        let root = temp_root("invalid-dist-probe-ready");
+        let server = profile(&root, "neoforge");
+        let observer = LaunchObserver::begin(&server).unwrap().unwrap();
+        let probe = "[mixin/ERROR]: Error loading class net/minecraft/client/gui/screens/Screen (java.lang.RuntimeException: Attempted to load class net/minecraft/client/gui/screens/Screen for invalid dist DEDICATED_SERVER)";
+
+        assert_eq!(
+            classify_loader_line("neoforge", probe, false),
+            LoaderObservation::Warning("invalid-dist-probe")
+        );
+        observer.observe_line("ERROR", probe);
+        assert!(!observer.is_failed());
+        assert!(!observer.take_safe_stop_request());
+
+        observer.observe_line("INFO", "Done (10.452s)! For help");
+        assert!(observer.is_ready());
+        observer.observe_line("ERROR", probe);
+        assert!(observer.is_ready());
+        assert!(!observer.is_failed());
+        assert!(!observer.take_safe_stop_request());
+
+        observer.mark_exit_code(Some(0));
+        let attempt = read_attempts(&server).unwrap().remove(0);
+        assert_eq!(attempt.state, "exited");
+        assert_eq!(attempt.exit_code, Some(0));
+        assert!(attempt.ready_at.is_some());
+        assert_eq!(attempt.fatal_code, None);
+        assert!(
+            attempt
+                .warning_codes
+                .iter()
+                .any(|value| value == "invalid-dist-probe")
+        );
+        let diagnosis = latest_diagnosis(&server).unwrap().unwrap();
+        assert_eq!(diagnosis.id, "launch-attempt-warning");
+        assert_eq!(diagnosis.severity, "warning");
+        assert!(
+            diagnosis
+                .related_logs
+                .iter()
+                .any(|line| line.contains("invalid dist DEDICATED_SERVER"))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_invalid_dist_failure_with_ready_and_clean_exit_is_diagnosed_as_warning() {
+        let root = temp_root("legacy-invalid-dist-ready");
+        let server = profile(&root, "neoforge");
+        let observer = LaunchObserver::begin(&server).unwrap().unwrap();
+        observer.observe_line(
+            "ERROR",
+            "[mixin/ERROR]: Attempted to load class net/minecraft/client/gui/screens/Screen for invalid dist DEDICATED_SERVER",
+        );
+        observer.observe_line("INFO", "Done (10.452s)! For help");
+        observer.mark_exit_code(Some(0));
+
+        let mut legacy_attempt = read_attempts(&server).unwrap().remove(0);
+        legacy_attempt.state = "failed".into();
+        legacy_attempt.ready_at = None;
+        legacy_attempt.fatal_code = Some("invalid-dist-client-only".into());
+        legacy_attempt.warning_codes.clear();
+        let path = attempts_dir(&root)
+            .unwrap()
+            .join(format!("{}.json", legacy_attempt.attempt_id));
+        write_attempt_atomically(&path, &legacy_attempt).unwrap();
+
+        let diagnosis = latest_diagnosis(&server).unwrap().unwrap();
+        assert_eq!(diagnosis.id, "launch-attempt-warning");
+        assert_eq!(diagnosis.severity, "warning");
+        assert!(diagnosis.what_happened.contains("終了コード0"));
+        assert!(
+            diagnosis
+                .related_logs
+                .iter()
+                .any(|line| line.contains("Done (10.452s)!"))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_dist_probe_followed_by_nonzero_exit_before_ready_remains_a_failure() {
+        let root = temp_root("invalid-dist-probe-exit");
+        let server = profile(&root, "neoforge");
+        let observer = LaunchObserver::begin(&server).unwrap().unwrap();
+        observer.observe_line(
+            "ERROR",
+            "Attempted to load class net/minecraft/client/gui/screens/Screen for invalid dist DEDICATED_SERVER",
+        );
+        assert!(!observer.is_failed());
+        assert!(!observer.take_safe_stop_request());
+
+        observer.mark_exit_code(Some(1));
+        let attempt = read_attempts(&server).unwrap().remove(0);
+        assert_eq!(attempt.state, "failed");
+        assert_eq!(attempt.fatal_code.as_deref(), Some("non-zero-before-ready"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_dist_warning_does_not_hide_a_real_mod_loading_failure_after_ready() {
+        let root = temp_root("invalid-dist-before-real-failure");
+        let server = profile(&root, "neoforge");
+        let observer = LaunchObserver::begin(&server).unwrap().unwrap();
+        observer.observe_line(
+            "ERROR",
+            "Attempted to load class net/minecraft/client/gui/screens/Screen for invalid dist DEDICATED_SERVER",
+        );
+        observer.observe_line("INFO", "Done (10.452s)! For help");
+        observer.observe_line("ERROR", "ModLoadingException: a real loader failure");
+        assert!(observer.is_failed());
+        assert!(observer.take_safe_stop_request());
+        observer.mark_exit_code(Some(1));
+        let attempt = read_attempts(&server).unwrap().remove(0);
+        assert_eq!(attempt.state, "failed");
+        assert_eq!(attempt.fatal_code.as_deref(), Some("mod-loading-exception"));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

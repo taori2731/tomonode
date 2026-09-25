@@ -603,19 +603,24 @@ fn extension_compatibility_issues(profile: &ServerProfile) -> Vec<DiagnosisIssue
             let Ok(file) = File::open(entry.path()) else {
                 continue;
             };
-            let Ok(mut archive) = ZipArchive::new(file) else {
+            let Ok(archive) = ZipArchive::new(file) else {
                 continue;
             };
-            let detected = if archive.by_name("fabric.mod.json").is_ok() {
-                Some("fabric")
-            } else if archive.by_name("META-INF/neoforge.mods.toml").is_ok() {
-                Some("neoforge")
-            } else if archive.by_name("META-INF/mods.toml").is_ok() {
-                Some("forge")
-            } else {
-                None
+            let has_fabric = archive.file_names().any(|name| name == "fabric.mod.json");
+            let has_forge = archive
+                .file_names()
+                .any(|name| name == "META-INF/mods.toml");
+            let has_neoforge = archive
+                .file_names()
+                .any(|name| name == "META-INF/neoforge.mods.toml");
+            let has_known_loader = has_fabric || has_forge || has_neoforge;
+            let matches_server_loader = match profile.server_type.to_ascii_lowercase().as_str() {
+                "fabric" => has_fabric,
+                "forge" => has_forge,
+                "neoforge" => has_neoforge,
+                _ => false,
             };
-            if detected.is_some_and(|loader| loader != profile.server_type) {
+            if has_known_loader && !matches_server_loader {
                 mismatched.push(entry.file_name().to_string_lossy().to_string());
             }
         }
@@ -738,8 +743,112 @@ fn issue(
 
 #[cfg(test)]
 mod tests {
-    use super::{analyze, classify_logs, redact, tcp_port_available, udp_port_available};
+    use super::{
+        analyze, classify_logs, extension_compatibility_issues, redact, tcp_port_available,
+        udp_port_available,
+    };
     use crate::models::{BasicSettings, ServerProfile};
+    use std::{fs, io::Write, path::Path};
+
+    fn profile_for_loader(root: &Path, loader: &str) -> ServerProfile {
+        ServerProfile {
+            id: format!("diagnosis-{loader}"),
+            name: "Diagnosis test".into(),
+            root_path: root.display().to_string(),
+            game_kind: "minecraft".into(),
+            server_type: loader.into(),
+            minecraft_version: "1.21.1".into(),
+            distribution_build: None,
+            launch_target: "server.jar".into(),
+            java_path: "java.exe".into(),
+            java_major: 21,
+            min_memory_mib: 1024,
+            max_memory_mib: 4096,
+            port: 25565,
+            eula_accepted_at: "test".into(),
+            pending_restart: false,
+            settings: BasicSettings::default(),
+            palworld_settings: None,
+            created_at: "test".into(),
+            updated_at: "test".into(),
+        }
+    }
+
+    fn write_test_mod(root: &Path, descriptors: &[&str]) {
+        use zip::{ZipWriter, write::SimpleFileOptions};
+
+        fs::create_dir_all(root.join("mods")).unwrap();
+        let file = fs::File::create(root.join("mods/test-mod.jar")).unwrap();
+        let mut archive = ZipWriter::new(file);
+        for descriptor in descriptors {
+            archive
+                .start_file(*descriptor, SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(b"test metadata").unwrap();
+        }
+        archive.finish().unwrap();
+    }
+
+    fn temp_mod_root(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "msh-diagnosis-loader-{label}-{}",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    #[test]
+    fn loader_compatibility_uses_matching_descriptors_instead_of_descriptor_order() {
+        let descriptors = [
+            ("fabric", "fabric.mod.json"),
+            ("forge", "META-INF/mods.toml"),
+            ("neoforge", "META-INF/neoforge.mods.toml"),
+        ];
+
+        for (loader, descriptor) in descriptors {
+            let root = temp_mod_root(loader);
+            write_test_mod(&root, &[descriptor]);
+            let profile = profile_for_loader(&root, loader);
+            let issues = extension_compatibility_issues(&profile);
+            assert!(
+                issues.iter().all(|issue| issue.id != "loader-mismatch"),
+                "matching {loader} descriptor should be accepted"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        let all_descriptors = [
+            "fabric.mod.json",
+            "META-INF/mods.toml",
+            "META-INF/neoforge.mods.toml",
+        ];
+        for (loader, _) in descriptors {
+            let root = temp_mod_root(&format!("multi-{loader}"));
+            write_test_mod(&root, &all_descriptors);
+            let profile = profile_for_loader(&root, loader);
+            let issues = extension_compatibility_issues(&profile);
+            assert!(
+                issues.iter().all(|issue| issue.id != "loader-mismatch"),
+                "multi-loader jar should match its available {loader} descriptor"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        for (loader, other_descriptor) in [
+            ("fabric", "META-INF/mods.toml"),
+            ("forge", "fabric.mod.json"),
+            ("neoforge", "META-INF/mods.toml"),
+        ] {
+            let root = temp_mod_root(&format!("wrong-{loader}"));
+            write_test_mod(&root, &[other_descriptor]);
+            let profile = profile_for_loader(&root, loader);
+            let issues = extension_compatibility_issues(&profile);
+            assert!(
+                issues.iter().any(|issue| issue.id == "loader-mismatch"),
+                "a {other_descriptor} only jar should not match {loader}"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
 
     #[test]
     fn classifies_common_crash_causes() {
