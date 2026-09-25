@@ -21,7 +21,8 @@ struct Metadata {
     /// IDs declared by this archive's own metadata.  These are the only IDs
     /// that participate in top-level duplicate detection.
     top_level_ids: Vec<String>,
-    /// IDs declared by archives contained in META-INF/jarjar/.  They are
+    /// IDs declared by archives contained in META-INF/jarjar/ or Fabric's
+    /// explicit jars list.  They are
     /// available for dependency resolution, but are not independent active
     /// files and therefore must not be counted as top-level duplicates.
     embedded_ids: Vec<String>,
@@ -29,9 +30,14 @@ struct Metadata {
     /// compatibility.  New logic must use `top_level_ids` and `embedded_ids`
     /// so that provenance is not lost.
     provided_ids: Vec<String>,
-    minecraft: Option<String>,
+    minecraft: Vec<String>,
     loader: Option<String>,
     dependencies: Vec<String>,
+    /// Fabric-provided mod IDs that satisfy dependency checks without being
+    /// separate top-level mods.
+    provided_aliases: Vec<String>,
+    /// Explicit Fabric `jars[].file` paths in this archive.
+    fabric_jar_paths: Vec<String>,
     client_required: bool,
     /// Some client-only Forge mods do not declare a `side = "CLIENT"`
     /// dependency.  Their own entrypoint still contains an explicit warning
@@ -71,8 +77,15 @@ pub fn check(profile: &ServerProfile) -> AppResult<ExtensionCheckReport> {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let metadata = inspect_archive(path, kind);
-        let top_level_ids = if metadata.top_level_ids.is_empty() {
+        let expected = expected_loader(profile, kind);
+        let metadata = inspect_archive(path, kind, Some(&expected));
+        // Fabric marks `environment = "client"` mods as not loadable on a
+        // dedicated server.  Keep their informational finding, but do not let
+        // them satisfy server-side dependencies or count as active mods.
+        let available_on_server = !(expected == "fabric" && metadata.client_required);
+        let top_level_ids = if !available_on_server {
+            Vec::new()
+        } else if metadata.top_level_ids.is_empty() {
             metadata.id.clone().into_iter().collect::<Vec<_>>()
         } else {
             metadata.top_level_ids.clone()
@@ -89,11 +102,15 @@ pub fn check(profile: &ServerProfile) -> AppResult<ExtensionCheckReport> {
         // it belongs to its parent artifact and is not another active mod
         // file.  This is what prevents four parents bundling mixinextras (or
         // two parents bundling geckolib) from producing false duplicates.
-        for id in &metadata.embedded_ids {
-            present_ids.insert(id.to_ascii_lowercase());
+        if available_on_server {
+            for id in &metadata.embedded_ids {
+                present_ids.insert(id.to_ascii_lowercase());
+            }
+            for id in &metadata.provided_aliases {
+                present_ids.insert(id.to_ascii_lowercase());
+            }
         }
         if let Some(loader) = metadata.loader.as_deref() {
-            let expected = expected_loader(profile, kind);
             if loader != expected && loader != "universal" {
                 items.push(item(
                     "error",
@@ -105,29 +122,54 @@ pub fn check(profile: &ServerProfile) -> AppResult<ExtensionCheckReport> {
                 ));
             }
         }
-        if let Some(version) = metadata.minecraft.as_deref() {
-            if !version_matches(version, &profile.minecraft_version) {
-                items.push(item(
-                    "warning",
-                    "minecraft-version",
-                    "Minecraft版を再確認してください",
-                    format!(
-                        "{name} のメタデータは {version}、サーバーは {} です。",
-                        profile.minecraft_version
-                    ),
-                    vec![name.clone()],
-                    "配布元の対応バージョンを確認してください",
-                ));
+        let version_results = metadata.minecraft.iter().map(|version| {
+            if metadata.loader.as_deref() == Some("fabric")
+                && is_unparsed_fabric_version_range(version)
+            {
+                None
+            } else {
+                Some(version_matches(version, &profile.minecraft_version))
             }
+        });
+        let version_results = version_results.collect::<Vec<_>>();
+        if !version_results.is_empty()
+            && !version_results.iter().any(|value| *value == Some(true))
+            && !version_results.iter().any(Option::is_none)
+        {
+            let version = metadata.minecraft.join(" OR ");
+            items.push(item(
+                "warning",
+                "minecraft-version",
+                "Minecraft版を再確認してください",
+                format!(
+                    "{name} のメタデータは {version}、サーバーは {} です。",
+                    profile.minecraft_version
+                ),
+                vec![name.clone()],
+                "配布元の対応バージョンを確認してください",
+            ));
         }
         if metadata.client_required {
+            let client_only_on_fabric = expected == "fabric";
             items.push(item(
                 "info",
                 "client-required",
-                "参加者側にも必要なModです",
-                format!("{name} はクライアント側にも導入が必要と記録されています。"),
+                if client_only_on_fabric {
+                    "クライアント専用Modです"
+                } else {
+                    "参加者側にも必要なModです"
+                },
+                if client_only_on_fabric {
+                    format!("{name} はクライアント専用のため、Fabric専用サーバーでは読み込まれません。サーバー側Modの依存関係も満たしません。")
+                } else {
+                    format!("{name} はクライアント側にも導入が必要と記録されています。")
+                },
                 vec![name.clone()],
-                "参加する友達へ同じ版を案内してください",
+                if client_only_on_fabric {
+                    "サーバーでは使用されないため、必要に応じてサーバーのmodsフォルダーから外してください"
+                } else {
+                    "参加する友達へ同じ版を案内してください"
+                },
             ));
         }
         if metadata.client_only_marker
@@ -216,7 +258,7 @@ pub fn check(profile: &ServerProfile) -> AppResult<ExtensionCheckReport> {
 const MAX_NESTED_ARCHIVE_DEPTH: u8 = 2;
 const MAX_NESTED_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 
-fn inspect_archive(path: &Path, kind: &str) -> Metadata {
+fn inspect_archive(path: &Path, kind: &str, preferred_loader: Option<&str>) -> Metadata {
     if !matches!(
         path.extension()
             .and_then(|value| value.to_str())
@@ -232,11 +274,16 @@ fn inspect_archive(path: &Path, kind: &str) -> Metadata {
     let Ok(mut archive) = ZipArchive::new(file) else {
         return Metadata::default();
     };
-    inspect_zip(&mut archive, kind, 0)
+    inspect_zip_for_loader(&mut archive, kind, 0, preferred_loader)
 }
 
-fn inspect_zip<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str, depth: u8) -> Metadata {
-    let mut metadata = inspect_zip_metadata(archive, kind);
+fn inspect_zip_for_loader<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    kind: &str,
+    depth: u8,
+    preferred_loader: Option<&str>,
+) -> Metadata {
+    let mut metadata = inspect_zip_metadata(archive, kind, preferred_loader);
     if depth == 0 && kind == "mod" {
         metadata.client_only_marker = archive_contains_client_only_marker(archive);
     }
@@ -244,14 +291,24 @@ fn inspect_zip<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str, depth: u
         return metadata;
     }
 
-    let nested_names = archive
-        .file_names()
-        .filter(|name| {
-            name.starts_with("META-INF/jarjar/") && name.to_ascii_lowercase().ends_with(".jar")
-        })
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let mut nested_names = if metadata.loader.as_deref() == Some("fabric") {
+        Vec::new()
+    } else {
+        archive
+            .file_names()
+            .filter(|name| {
+                name.starts_with("META-INF/jarjar/") && name.to_ascii_lowercase().ends_with(".jar")
+            })
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    nested_names.extend(metadata.fabric_jar_paths.iter().cloned());
+    let mut seen_nested_names = HashSet::new();
+    nested_names.retain(|name| seen_nested_names.insert(name.clone()));
     for nested_name in nested_names {
+        if !valid_nested_archive_path(&nested_name) {
+            continue;
+        }
         let Ok(mut entry) = archive.by_name(&nested_name) else {
             continue;
         };
@@ -265,16 +322,31 @@ fn inspect_zip<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str, depth: u
         let Ok(mut nested) = ZipArchive::new(Cursor::new(bytes)) else {
             continue;
         };
-        let nested_metadata = inspect_zip(&mut nested, kind, depth + 1);
+        let nested_metadata =
+            inspect_zip_for_loader(&mut nested, kind, depth + 1, preferred_loader);
         metadata.provided_ids.extend(nested_metadata.provided_ids);
-        metadata.embedded_ids.extend(nested_metadata.top_level_ids);
-        metadata.embedded_ids.extend(nested_metadata.embedded_ids);
+        if !nested_metadata.client_required {
+            metadata.embedded_ids.extend(nested_metadata.top_level_ids);
+            metadata.embedded_ids.extend(nested_metadata.embedded_ids);
+            metadata
+                .provided_aliases
+                .extend(nested_metadata.provided_aliases);
+        }
         metadata.dependencies.extend(nested_metadata.dependencies);
     }
     metadata.provided_ids = unique_ids(metadata.provided_ids);
     metadata.embedded_ids = unique_ids(metadata.embedded_ids);
+    metadata.provided_aliases = unique_ids(metadata.provided_aliases);
     metadata.dependencies = unique_ids(metadata.dependencies);
     metadata
+}
+
+fn valid_nested_archive_path(value: &str) -> bool {
+    value.to_ascii_lowercase().ends_with(".jar")
+        && !value.contains('\\')
+        && value
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 const CLIENT_ONLY_MARKERS: [&[u8]; 4] = [
@@ -321,43 +393,75 @@ fn archive_contains_client_only_marker<R: Read + Seek>(archive: &mut ZipArchive<
     false
 }
 
-fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str) -> Metadata {
+fn inspect_zip_metadata<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    kind: &str,
+    preferred_loader: Option<&str>,
+) -> Metadata {
     if !matches!(kind, "mod" | "plugin" | "datapack") {
         return Metadata::default();
     }
+
+    let mut candidates = Vec::new();
     if let Some(value) = read_zip_text(archive, "fabric.mod.json", 1024 * 1024) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&value) {
             let id = json
                 .get("id")
                 .and_then(|value| value.as_str())
                 .map(str::to_string);
+            let client_only = json
+                .get("environment")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value == "client");
             let top_level_ids = id.clone().into_iter().collect::<Vec<_>>();
-            return Metadata {
+            candidates.push(Metadata {
                 provided_ids: id.clone().into_iter().collect(),
                 top_level_ids,
                 embedded_ids: Vec::new(),
                 id,
-                minecraft: json.pointer("/depends/minecraft").and_then(version_value),
+                minecraft: if client_only {
+                    Vec::new()
+                } else {
+                    json.pointer("/depends/minecraft")
+                        .map(version_values)
+                        .unwrap_or_default()
+                },
                 loader: Some("fabric".into()),
-                dependencies: json
-                    .get("depends")
-                    .and_then(|value| value.as_object())
-                    .map(|values| {
-                        values
-                            .keys()
-                            .filter(|key| {
-                                *key != "minecraft" && *key != "java" && *key != "fabricloader"
-                            })
-                            .cloned()
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                client_required: json
-                    .get("environment")
-                    .and_then(|value| value.as_str())
-                    .is_some_and(|value| value == "client"),
+                dependencies: if client_only {
+                    Vec::new()
+                } else {
+                    json.get("depends")
+                        .and_then(|value| value.as_object())
+                        .map(|values| {
+                            values
+                                .keys()
+                                .filter(|key| {
+                                    *key != "minecraft" && *key != "java" && *key != "fabricloader"
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                },
+                provided_aliases: json
+                    .get("provides")
+                    .and_then(|value| value.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect(),
+                fabric_jar_paths: json
+                    .get("jars")
+                    .and_then(|value| value.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|entry| entry.get("file").and_then(|value| value.as_str()))
+                    .filter(|path| valid_nested_archive_path(path))
+                    .map(str::to_string)
+                    .collect(),
+                client_required: client_only,
                 client_only_marker: false,
-            };
+            });
         }
     }
     for (name, loader) in [
@@ -365,9 +469,24 @@ fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str)
         ("META-INF/neoforge.mods.toml", "neoforge"),
     ] {
         if let Some(value) = read_zip_text(archive, name, 2 * 1024 * 1024) {
-            return parse_forge_metadata(&value, loader);
+            candidates.push(parse_forge_metadata(&value, loader));
         }
     }
+
+    if !candidates.is_empty() {
+        if let Some(preferred_loader) = preferred_loader {
+            if let Some(index) = candidates.iter().position(|metadata| {
+                metadata
+                    .loader
+                    .as_deref()
+                    .is_some_and(|loader| loader.eq_ignore_ascii_case(preferred_loader))
+            }) {
+                return candidates.swap_remove(index);
+            }
+        }
+        return candidates.remove(0);
+    }
+
     if kind == "plugin" {
         if let Some(value) = read_zip_text(archive, "plugin.yml", 1024 * 1024)
             .or_else(|| read_zip_text(archive, "paper-plugin.yml", 1024 * 1024))
@@ -396,9 +515,11 @@ fn inspect_zip_metadata<R: Read + Seek>(archive: &mut ZipArchive<R>, kind: &str)
                 provided_ids: id.into_iter().collect(),
                 top_level_ids,
                 embedded_ids: Vec::new(),
-                minecraft: field("api-version"),
+                minecraft: field("api-version").into_iter().collect(),
                 loader: Some("paper".into()),
                 dependencies,
+                provided_aliases: Vec::new(),
+                fabric_jar_paths: Vec::new(),
                 client_required: false,
                 client_only_marker: false,
             };
@@ -421,33 +542,51 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
     let mut minecraft = None;
     let mut dependencies = Vec::new();
     let mut dependency_id = None;
-    let mut dependency_mandatory = true;
+    let mut dependency_mandatory = None;
+    let mut dependency_type = None;
     let mut dependency_side = None;
     let mut dependency_version = None;
 
     let flush_dependency = |dependency_id: &mut Option<String>,
-                            dependency_mandatory: &mut bool,
+                            dependency_mandatory: &mut Option<bool>,
+                            dependency_type: &mut Option<String>,
                             dependency_side: &mut Option<String>,
                             dependency_version: &mut Option<String>,
                             dependencies: &mut Vec<String>,
                             minecraft: &mut Option<String>| {
-        let Some(value) = dependency_id.take() else {
+        let current_id = dependency_id.take();
+        let mandatory_override = dependency_mandatory.take();
+        let current_type = dependency_type.take();
+        let current_side = dependency_side.take();
+        let current_version = dependency_version.take();
+        let Some(current_id) = current_id else {
             return;
         };
-        if value.eq_ignore_ascii_case("minecraft") {
-            if minecraft.is_none() {
-                *minecraft = dependency_version.take();
-            }
-        } else if *dependency_mandatory
-            && !dependency_side
-                .as_deref()
-                .is_some_and(|side| side.eq_ignore_ascii_case("client"))
-        {
-            dependencies.push(value);
+        let client_only = current_side
+            .as_deref()
+            .is_some_and(|side| side.eq_ignore_ascii_case("client"));
+        let dependency_type = current_type.as_deref().unwrap_or_default();
+        let non_required = matches!(
+            dependency_type.to_ascii_lowercase().as_str(),
+            "optional" | "incompatible" | "discouraged"
+        );
+        let mandatory = if dependency_type.eq_ignore_ascii_case("required") {
+            true
+        } else if non_required {
+            false
+        } else {
+            mandatory_override.unwrap_or(true)
+        };
+        if client_only || !mandatory {
+            return;
         }
-        *dependency_mandatory = true;
-        *dependency_side = None;
-        *dependency_version = None;
+        if current_id.eq_ignore_ascii_case("minecraft") {
+            if minecraft.is_none() {
+                *minecraft = current_version;
+            }
+        } else if !dependency_type.eq_ignore_ascii_case("incompatible") {
+            dependencies.push(current_id);
+        }
     };
 
     for raw_line in value.lines() {
@@ -459,6 +598,7 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
             flush_dependency(
                 &mut dependency_id,
                 &mut dependency_mandatory,
+                &mut dependency_type,
                 &mut dependency_side,
                 &mut dependency_version,
                 &mut dependencies,
@@ -471,6 +611,7 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
             flush_dependency(
                 &mut dependency_id,
                 &mut dependency_mandatory,
+                &mut dependency_type,
                 &mut dependency_side,
                 &mut dependency_version,
                 &mut dependencies,
@@ -483,6 +624,7 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
             flush_dependency(
                 &mut dependency_id,
                 &mut dependency_mandatory,
+                &mut dependency_type,
                 &mut dependency_side,
                 &mut dependency_version,
                 &mut dependencies,
@@ -507,10 +649,9 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
             }
             (ForgeSection::Dependency, "modId") => dependency_id = parsed,
             (ForgeSection::Dependency, "mandatory") => {
-                dependency_mandatory = parsed
-                    .as_deref()
-                    .is_none_or(|value| value.eq_ignore_ascii_case("true"));
+                dependency_mandatory = parsed.map(|value| value.eq_ignore_ascii_case("true"));
             }
+            (ForgeSection::Dependency, "type") => dependency_type = parsed,
             (ForgeSection::Dependency, "side") => dependency_side = parsed,
             (ForgeSection::Dependency, "versionRange") => dependency_version = parsed,
             _ => {}
@@ -519,6 +660,7 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
     flush_dependency(
         &mut dependency_id,
         &mut dependency_mandatory,
+        &mut dependency_type,
         &mut dependency_side,
         &mut dependency_version,
         &mut dependencies,
@@ -531,9 +673,11 @@ fn parse_forge_metadata(value: &str, loader: &str) -> Metadata {
         top_level_ids,
         embedded_ids: Vec::new(),
         id,
-        minecraft,
+        minecraft: minecraft.into_iter().collect(),
         loader: Some(loader.into()),
         dependencies: unique_ids(dependencies),
+        provided_aliases: Vec::new(),
+        fabric_jar_paths: Vec::new(),
         client_required: false,
         client_only_marker: false,
     }
@@ -602,14 +746,19 @@ fn expected_loader(profile: &ServerProfile, kind: &str) -> String {
         profile.server_type.clone()
     }
 }
-fn version_value(value: &serde_json::Value) -> Option<String> {
-    value.as_str().map(str::to_string).or_else(|| {
-        value
-            .as_array()
-            .and_then(|items| items.first())
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-    })
+fn version_values(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_str()
+        .map(|value| vec![value.to_string()])
+        .or_else(|| {
+            value.as_array().map(|items| {
+                items
+                    .iter()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -670,9 +819,14 @@ fn version_matches(requirement: &str, actual: &str) -> bool {
     // Fabric's simple dependency value is often a fixed version or a
     // major/minor prefix.  Preserve the old behavior where 1.20 matches
     // 1.20.1, while a plain fixed 1.20.1 does not match 1.20.10.
-    requirement == actual
-        || requirement.contains(actual)
-        || actual.starts_with(&format!("{requirement}."))
+    requirement == actual || actual.starts_with(&format!("{requirement}."))
+}
+
+fn is_unparsed_fabric_version_range(requirement: &str) -> bool {
+    requirement.contains(['~', '^'])
+        || requirement
+            .split('.')
+            .any(|part| matches!(part, "x" | "X" | "*"))
 }
 
 fn parse_maven_ranges(requirement: &str) -> Option<Vec<VersionRange>> {
@@ -907,6 +1061,13 @@ mod tests {
         }
     }
 
+    fn profile_for_loader(root: &Path, loader: &str, minecraft_version: &str) -> ServerProfile {
+        let mut profile = test_profile(root);
+        profile.server_type = loader.into();
+        profile.minecraft_version = minecraft_version.into();
+        profile
+    }
+
     fn test_root(label: &str) -> PathBuf {
         let root =
             std::env::temp_dir().join(format!("msh-extension-{label}-{}", uuid::Uuid::new_v4()));
@@ -923,6 +1084,8 @@ mod tests {
         assert!(version_matches(">=1.21.11", "1.21.11"));
         assert!(version_matches("1.21", "1.21.11"));
         assert!(!version_matches("1.20.1", "1.21.11"));
+        assert!(!version_matches("1.20.1", "1.20"));
+        assert!(!version_matches("1.21.1", "1.21.10"));
     }
 
     #[test]
@@ -1064,8 +1227,230 @@ side = "CLIENT"
         );
 
         assert_eq!(metadata.id.as_deref(), Some("example"));
-        assert_eq!(metadata.minecraft.as_deref(), Some("[1.20.1]"));
+        assert_eq!(metadata.minecraft, vec!["[1.20.1]"]);
         assert_eq!(metadata.dependencies, vec!["requiredmod"]);
+    }
+
+    #[test]
+    fn neoforge_parser_respects_dependency_types_and_dedicated_server_side() {
+        let metadata = parse_forge_metadata(
+            r#"
+[[mods]]
+modId = "create"
+
+[[dependencies."create"]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1,1.22)"
+side = "BOTH"
+
+[[dependencies."create"]]
+modId = "requiredmod"
+type = "required"
+side = "BOTH"
+
+[[dependencies."create"]]
+modId = "optionalmod"
+type = "optional"
+side = "BOTH"
+
+[[dependencies."create"]]
+modId = "incompatiblemod"
+type = "incompatible"
+side = "BOTH"
+
+[[dependencies."create"]]
+modId = "discouragedmod"
+type = "discouraged"
+side = "BOTH"
+
+[[dependencies."create"]]
+modId = "clientmod"
+type = "required"
+side = "CLIENT"
+"#,
+            "neoforge",
+        );
+
+        assert_eq!(metadata.id.as_deref(), Some("create"));
+        assert_eq!(metadata.minecraft, vec!["[1.21.1,1.22)"]);
+        assert_eq!(metadata.dependencies, vec!["requiredmod"]);
+    }
+
+    #[test]
+    fn metadata_selection_prefers_the_server_loader_descriptor() {
+        let fabric = br#"{"schemaVersion":1,"id":"fabric_variant","depends":{"fabricdep":"*"}}"#;
+        let forge = br#"[[mods]]
+modId = "forge_variant"
+"#;
+        let neoforge = br#"[[mods]]
+modId = "neoforge_variant"
+"#;
+        let bytes = zip_with_entries(&[
+            ("fabric.mod.json", fabric),
+            ("META-INF/mods.toml", forge),
+            ("META-INF/neoforge.mods.toml", neoforge),
+        ]);
+
+        for (preferred, expected) in [
+            ("fabric", "fabric_variant"),
+            ("forge", "forge_variant"),
+            ("neoforge", "neoforge_variant"),
+        ] {
+            let mut archive = ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+            let metadata = inspect_zip_metadata(&mut archive, "mod", Some(preferred));
+            assert_eq!(metadata.loader.as_deref(), Some(preferred));
+            assert_eq!(metadata.id.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn fabric_nested_jars_provides_aliases_and_minecraft_ranges_are_resolved() {
+        let root = test_root("fabric-jars-provides-ranges");
+        let nested = zip_with_entries(&[(
+            "fabric.mod.json",
+            br#"{"schemaVersion":1,"id":"nested_consumer"}"#,
+        )]);
+        let parent_json = br#"{"schemaVersion":1,"id":"parent","provides":["provided_alias"],"depends":{"minecraft":["1.20.1","1.21.1"],"provided_alias":"*","nested_consumer":"*"},"jars":[{"file":"nested/vendor/dependency.jar"}]}"#;
+        write_mod(
+            &root,
+            "parent.jar",
+            zip_with_entries(&[
+                ("fabric.mod.json", parent_json),
+                ("nested/vendor/dependency.jar", &nested),
+            ]),
+        );
+        write_mod(
+            &root,
+            "alias-user.jar",
+            zip_with_entries(&[(
+                "fabric.mod.json",
+                br#"{"schemaVersion":1,"id":"alias_user","depends":{"provided_alias":"*"}}"#,
+            )]),
+        );
+        write_mod(
+            &root,
+            "provided-alias-top-level.jar",
+            zip_with_entries(&[(
+                "fabric.mod.json",
+                br#"{"schemaVersion":1,"id":"provided_alias"}"#,
+            )]),
+        );
+        write_mod(
+            &root,
+            "unknown-fabric-range.jar",
+            zip_with_entries(&[(
+                "fabric.mod.json",
+                br#"{"schemaVersion":1,"id":"unknown_range","depends":{"minecraft":"1.21.x"}}"#,
+            )]),
+        );
+
+        let report = check(&profile_for_loader(&root, "fabric", "1.21.1")).unwrap();
+        assert!(
+            !report.blocking,
+            "Fabric metadata should resolve: {report:?}"
+        );
+        assert!(!report.items.iter().any(|item| {
+            matches!(
+                item.code.as_str(),
+                "missing-dependency" | "duplicate-id" | "minecraft-version"
+            )
+        }));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fabric_client_only_mod_does_not_apply_dependencies_or_satisfy_server_dependencies() {
+        let root = test_root("fabric-client-only-server-dependency");
+        write_mod(
+            &root,
+            "client-only.jar",
+            zip_with_entries(&[(
+                "fabric.mod.json",
+                br#"{"schemaVersion":1,"id":"client_only_mod","environment":"client","provides":["client_alias"],"depends":{"minecraft":"1.19.4","missing_client_library":"*"}}"#,
+            )]),
+        );
+        write_mod(
+            &root,
+            "server-mod.jar",
+            zip_with_entries(&[(
+                "fabric.mod.json",
+                br#"{"schemaVersion":1,"id":"server_mod","depends":{"client_only_mod":"*","client_alias":"*"}}"#,
+            )]),
+        );
+
+        let report = check(&profile_for_loader(&root, "fabric", "1.21.1")).unwrap();
+        let missing = report
+            .items
+            .iter()
+            .find(|item| item.code == "missing-dependency")
+            .expect("server mod must not treat the client-only mod as available");
+        assert!(missing.detail.contains("client_only_mod"));
+        assert!(missing.detail.contains("client_alias"));
+        assert!(!missing.detail.contains("missing_client_library"));
+        assert!(
+            !report
+                .items
+                .iter()
+                .any(|item| item.code == "minecraft-version")
+        );
+        let client_notice = report
+            .items
+            .iter()
+            .find(|item| item.code == "client-required")
+            .expect("client-only mod should be explained");
+        assert!(client_notice.title.contains("専用"));
+        assert!(client_notice.detail.contains("読み込まれません"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fabric_does_not_count_undeclared_jarjar_entries_as_present() {
+        let root = test_root("fabric-does-not-scan-jarjar");
+        let nested = zip_with_entries(&[(
+            "fabric.mod.json",
+            br#"{"schemaVersion":1,"id":"undeclared_embedded"}"#,
+        )]);
+        let outer = zip_with_entries(&[
+            (
+                "fabric.mod.json",
+                br#"{"schemaVersion":1,"id":"outer","depends":{"undeclared_embedded":"*"}}"#,
+            ),
+            ("META-INF/jarjar/unlisted.jar", &nested),
+        ]);
+        write_mod(&root, "outer.jar", outer);
+
+        let report = check(&profile_for_loader(&root, "fabric", "1.21.1")).unwrap();
+        assert!(report.blocking);
+        assert!(report.items.iter().any(|item| {
+            item.code == "missing-dependency" && item.detail.contains("undeclared_embedded")
+        }));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_required_neoforge_dependency_still_blocks() {
+        let root = test_root("neoforge-required-dependency");
+        let metadata = r#"[[mods]]
+modId = "dependent"
+
+[[dependencies."dependent"]]
+modId = "missing_required"
+type = "required"
+side = "BOTH"
+"#;
+        write_mod(
+            &root,
+            "dependent.jar",
+            zip_with_entries(&[("META-INF/neoforge.mods.toml", metadata.as_bytes())]),
+        );
+
+        let report = check(&profile_for_loader(&root, "neoforge", "1.21.1")).unwrap();
+        assert!(report.blocking);
+        assert!(report.items.iter().any(|item| {
+            item.code == "missing-dependency" && item.detail.contains("missing_required")
+        }));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1093,7 +1478,7 @@ side = "BOTH"
             ("META-INF/jarjar/puzzlesaccessapi-forge.jar", &nested),
         ]);
         let mut archive = ZipArchive::new(Cursor::new(outer)).unwrap();
-        let metadata = inspect_zip(&mut archive, "mod", 0);
+        let metadata = inspect_zip_for_loader(&mut archive, "mod", 0, Some("forge"));
 
         assert!(
             metadata
