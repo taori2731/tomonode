@@ -1,3 +1,4 @@
+mod account_auth;
 mod app_update;
 mod backup;
 mod bedrock;
@@ -54,6 +55,9 @@ use tauri::{Emitter, Manager, State};
 use uuid::Uuid;
 
 use crate::{
+    account_auth::{
+        account_load_session, account_logout, account_request_code, account_verify_code,
+    },
     downloads::{download_server, http_client},
     error::{AppError, AppResult},
     java::{detect_java_runtimes, required_java_major},
@@ -5037,6 +5041,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             quit_app,
+            account_request_code,
+            account_verify_code,
+            account_load_session,
+            account_logout,
             check_app_update,
             install_app_update,
             list_servers,

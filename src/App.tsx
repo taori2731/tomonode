@@ -19,6 +19,7 @@ import { workspaceText } from "./lib/workspaceLocale";
 import { homeText } from "./lib/homeLocale";
 import { brand, formatNotificationTitle } from "./lib/brand";
 import { rebrandText } from "./lib/rebrandLocale";
+import { accountText } from "./lib/accountLocale";
 import { BACKGROUND_STATUS_POLL_INTERVAL_MS, isServerWorkspaceVisible, selectedLogPollInterval, selectedStatusPollInterval, shouldPollBackgroundStatuses } from "./lib/pollingPolicy";
 import { sameLogSnapshot } from "./lib/logs";
 import { sameRuntimeStatus } from "./lib/runtimeStatus";
@@ -27,6 +28,7 @@ import type { AppSection, AppearanceSettings, DeleteServerResult, LogEntry, Moni
 
 const ConsoleTab = lazy(() => import("./components/ConsoleTab").then((module) => ({ default: module.ConsoleTab })));
 const AppSettingsDialog = lazy(() => import("./components/AppSettingsDialog").then((module) => ({ default: module.AppSettingsDialog })));
+const AccountDialog = lazy(() => import("./components/AccountDialog").then((module) => ({ default: module.AccountDialog })));
 const CreateServerWizard = lazy(() => import("./components/CreateServerWizard").then((module) => ({ default: module.CreateServerWizard })));
 const DeleteServerDialog = lazy(() => import("./components/DeleteServerDialog").then((module) => ({ default: module.DeleteServerDialog })));
 const ExtensionsTab = lazy(() => import("./components/ExtensionsTab").then((module) => ({ default: module.ExtensionsTab })));
@@ -106,6 +108,7 @@ export function AppContent() {
   const { locale, t } = useI18n();
   const workspaceCopy = useMemo(() => workspaceText(locale), [locale]);
   const homeCopy = useMemo(() => homeText(locale), [locale]);
+  const accountCopy = useMemo(() => accountText(locale), [locale]);
   const tabs = useMemo<{ id: TabId; label: string; icon: Parameters<typeof Icon>[0]["name"] }[]>(() => [
     { id: "overview", label: t("overview"), icon: "chart" },
     { id: "console", label: t("console"), icon: "console" },
@@ -133,6 +136,7 @@ export function AppContent() {
   const [showInvite, setShowInvite] = useState(false);
   const [showCrossplayInvite, setShowCrossplayInvite] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<ServerProfile>();
   const [busyAction, setBusyAction] = useState("");
   const [toast, setToast] = useState("");
@@ -395,6 +399,7 @@ export function AppContent() {
         <span className="unofficial-label">{t("unofficial")}</span>
         <GlobalSearch servers={servers} onOpenServer={openServer} onSection={navigateSection} onSettings={openAppSettings} />
         <div className="titlebar-actions">
+          <button className="top-button ghost account-button" type="button" onClick={() => setShowAccount(true)}><Icon name="users" size={18} />{accountCopy.account}</button>
           {selected?.serverType === "paper" ? <button className="top-button ghost crossplay-invite-button" type="button" onClick={() => setShowCrossplayInvite(true)}><Icon name="users" />{t("inviteBedrock")}</button> : null}
           <button className="top-button ghost" type="button" onClick={() => selected ? setShowInvite(true) : setToast(t("selectServerFirst"))}><Icon name="invite" />{t("inviteFriends")}</button>
           <button className="icon-button theme-button" type="button" onClick={theme.cycle} aria-label={`${t("theme")}: ${theme.mode}`} title={`${t("theme")}: ${theme.mode}`}><Icon name={theme.resolved === "dark" ? "moon" : "sun"} /></button>
@@ -474,6 +479,7 @@ export function AppContent() {
       {showImport ? <ImportServerWizard onClose={() => setShowImport(false)} onImported={(server) => { setServers((current) => [...current, server]); setSelectedId(server.id); setActiveTab("overview"); setShowImport(false); setToast("既存サーバーを読み取り登録しました"); }} /> : null}
       {showInvite && selected ? selectedIsPalworld ? <PalworldInviteDialog key={selected.id} server={selected} onClose={() => setShowInvite(false)} notify={setToast} /> : <InviteDialog server={selected} status={selectedStatus} onClose={() => setShowInvite(false)} notify={setToast} /> : null}
       {showCrossplayInvite && selected?.serverType === "paper" ? <CrossplayInviteDialog server={selected} status={selectedStatus} onClose={() => setShowCrossplayInvite(false)} notify={setToast} /> : null}
+      {showAccount ? <AccountDialog locale={locale} onClose={() => setShowAccount(false)} /> : null}
       {showAppSettings ? <AppSettingsDialog server={selected} status={selected ? selectedStatus : undefined} servers={servers} statuses={statuses} onStatusesChanged={(values) => setStatuses((current) => ({ ...current, ...values }))} onAppearanceChanged={theme.setAppearance} onClose={() => setShowAppSettings(false)} notify={setToast} fail={setError} /> : null}
       {deleteTarget ? <DeleteServerDialog server={deleteTarget} status={statuses[deleteTarget.id] ?? stoppedStatus(deleteTarget)} onClose={() => setDeleteTarget(undefined)} fail={setError} onDeleted={(result: DeleteServerResult) => {
         const next = servers.filter((item) => item.id !== deleteTarget.id);

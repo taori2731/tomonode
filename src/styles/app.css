@@ -1399,3 +1399,12 @@ a { color: var(--accent); }
   .modpack-role-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .modpack-safety-grid, .modpack-target-grid, .modpack-plan-summary { grid-template-columns: 1fr; }
 }
+.account-dialog { width: min(560px, 100%); }
+.account-dialog .wizard-header { justify-content: space-between; }
+.account-dialog-body { min-height: 0; display: flex; flex-direction: column; gap: 16px; }
+.account-dialog-body > p { margin: 0; }
+.account-form { gap: 14px; }
+.account-status-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-soft); }
+.account-status-card > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; overflow-wrap: anywhere; }
+.account-status-card strong { font-size: 15px; }
+.account-dialog .wizard-footer { gap: 12px; }

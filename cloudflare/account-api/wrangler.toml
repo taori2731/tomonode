@@ -1,0 +1,14 @@
+name = "tomonode-account-api"
+main = "src/worker.ts"
+compatibility_date = "2026-09-26"
+workers_dev = true
+preview_urls = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tomonode-accounts"
+database_id = "bf106e14-5f44-41a9-81f5-8e096a16f734"
+migrations_dir = "migrations"
+
+[vars]
+APP_BASE_URL = "https://tomonode.site"

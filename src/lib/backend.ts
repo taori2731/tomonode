@@ -76,6 +76,8 @@ import type {
 } from "../types";
 import { isValidDeleteConfirmation } from "./deleteConfirmation";
 import { getNetworkProtocolForServerType, getServerMaxPlayers, isPalworldServer } from "./gameAdapter";
+import { ACCOUNT_API_BASE_URL } from "./accountConfig";
+import type { AccountProfile } from "./accountTypes";
 
 const inDesktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -293,6 +295,10 @@ async function desktopOr<T>(command: string, args: Record<string, unknown>, fall
 export const backend = {
   isDesktop: inDesktop,
   getAppVersion: () => inDesktop ? import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()) : Promise.resolve(packageMetadata.version),
+  accountLoadSession: () => desktopOr<AccountProfile | null>("account_load_session", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => null),
+  accountRequestCode: (email: string) => desktopOr<void>("account_request_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, email }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
+  accountVerifyCode: (email: string, code: string) => desktopOr<AccountProfile>("account_verify_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, email, code }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
+  accountLogout: () => desktopOr<void>("account_logout", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => undefined),
   quitApp: () => desktopOr<void>("quit_app", {}, () => undefined),
   checkAppUpdate: (endpoint?: string) => desktopOr<AppUpdateInfo>("check_app_update", { endpoint: endpoint?.trim() || null }, () => ({ configured: true, currentVersion: packageMetadata.version, available: false })),
   installAppUpdate: (expectedVersion: string, endpoint?: string) => desktopOr<void>("install_app_update", { expectedVersion, endpoint: endpoint?.trim() || null }, () => Promise.reject(new Error("Update installation is only available in the installed Windows app."))),
