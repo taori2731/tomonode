@@ -1,54 +1,98 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { AccountDialog } from "./AccountDialog";
 import { backend } from "../lib/backend";
+import { accountText } from "../lib/accountLocale";
 import type { AccountProfile } from "../lib/accountTypes";
+import { AccountDialog } from "./AccountDialog";
 
-const profile: AccountProfile = { email: "owner@example.com" };
+const copy = accountText("ja");
+const profile: AccountProfile = {
+  email: "player@example.com",
+  displayName: "Player001",
+  hasPassword: true,
+  avatarDataUrl: null,
+};
+
+let originalDesktop = false;
+
+beforeEach(() => { originalDesktop = backend.isDesktop; });
+afterEach(() => {
+  backend.isDesktop = originalDesktop;
+  vi.restoreAllMocks();
+});
+
+function renderAccount(onClose = vi.fn(), initialProfile: AccountProfile | null = profile, profileLoaded = true) {
+  const onProfileChange = vi.fn();
+  const rendered = render(<AccountDialog locale="ja" initialProfile={initialProfile} profileLoaded={profileLoaded} onProfileChange={onProfileChange} onClose={onClose} />);
+  return { onClose, onProfileChange, unmount: rendered.unmount };
+}
 
 describe("AccountDialog", () => {
-  let originalDesktop: boolean;
+  it("opens the signed-in profile as a compact popover and navigates to security and back", () => {
+    renderAccount();
 
-  beforeEach(() => {
-    originalDesktop = backend.isDesktop;
+    const menu = screen.getByRole("dialog", { name: copy.profileSettings });
+    expect(menu).toHaveClass("account-dialog-popover");
+    expect(menu).toHaveTextContent(profile.displayName);
+    expect(menu).toHaveTextContent(profile.email);
+    expect(menu).toHaveTextContent(copy.freePlan);
+    expect(screen.queryByRole("heading", { name: copy.title })).not.toBeInTheDocument();
+
+    fireEvent.click(within(menu).getByRole("button", { name: copy.security }));
+    const security = screen.getByRole("dialog", { name: copy.security });
+    expect(security).not.toHaveClass("account-dialog-popover");
+    expect(security).toHaveTextContent(profile.email);
+
+    fireEvent.click(within(security).getByRole("button", { name: copy.profileSettings }));
+    expect(screen.getByRole("dialog", { name: copy.profileSettings })).toHaveClass("account-dialog-popover");
+  });
+
+  it("lets a signed-in user edit their display name and synchronizes the profile change", async () => {
     backend.isDesktop = true;
-    vi.spyOn(backend, "accountLoadSession").mockResolvedValue(null);
+    const updated = { ...profile, displayName: "New Player" };
+    const updateName = vi.spyOn(backend, "accountUpdateDisplayName").mockResolvedValue(updated);
+    const { onProfileChange } = renderAccount();
+    const menu = screen.getByRole("dialog", { name: copy.profileSettings });
+
+    fireEvent.click(within(menu).getByRole("button", { name: copy.edit }));
+    fireEvent.change(within(menu).getByRole("textbox", { name: copy.displayName }), { target: { value: updated.displayName } });
+    fireEvent.click(within(menu).getByRole("button", { name: copy.saveProfile }));
+
+    await waitFor(() => expect(updateName).toHaveBeenCalledWith(updated.displayName));
+    expect(await within(menu).findByText(updated.displayName)).toBeInTheDocument();
+    expect(onProfileChange).toHaveBeenCalledWith(updated);
   });
 
-  afterEach(() => {
-    backend.isDesktop = originalDesktop;
-    vi.restoreAllMocks();
+  it("keeps unresolved sessions in the anchored loading panel until the startup profile arrives", async () => {
+    const { rerender } = render(<AccountDialog locale="ja" initialProfile={null} profileLoaded={false} onProfileChange={vi.fn()} onClose={vi.fn()} />);
+    const checking = screen.getByRole("dialog", { name: copy.profileSettings });
+    expect(checking).toHaveClass("account-dialog-popover");
+    expect(within(checking).getByRole("status")).toHaveTextContent(copy.loading);
+    expect(screen.queryByRole("heading", { name: copy.title })).not.toBeInTheDocument();
+
+    rerender(<AccountDialog locale="ja" initialProfile={profile} profileLoaded={true} onProfileChange={vi.fn()} onClose={vi.fn()} />);
+    expect(await screen.findByRole("dialog", { name: copy.profileSettings })).toHaveTextContent(profile.displayName);
   });
 
-  it("signs in with an emailed code and can sign out", async () => {
-    const requestCode = vi.spyOn(backend, "accountRequestCode").mockResolvedValue();
-    const verifyCode = vi.spyOn(backend, "accountVerifyCode").mockResolvedValue(profile);
-    const logout = vi.spyOn(backend, "accountLogout").mockResolvedValue();
-    render(<AccountDialog locale="ja" onClose={() => undefined} />);
+  it("closes on Escape and outside pointer input while keeping keyboard focus inside", () => {
+    const trigger = document.createElement("button");
+    trigger.textContent = "Open account";
+    document.body.append(trigger);
+    trigger.focus();
+    const { onClose, unmount } = renderAccount();
+    const menu = screen.getByRole("dialog", { name: copy.profileSettings });
+    expect(menu).toHaveFocus();
 
-    fireEvent.change(await screen.findByLabelText("メールアドレス"), { target: { value: "owner@example.com" } });
-    fireEvent.click(screen.getByRole("button", { name: /確認コードを送る/ }));
-    await waitFor(() => expect(requestCode).toHaveBeenCalledWith("owner@example.com"));
-    expect(await screen.findByRole("status")).toHaveTextContent("確認コードを送りました： owner@example.com");
+    fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
+    expect(within(menu).getByRole("button", { name: copy.signOut })).toHaveFocus();
 
-    fireEvent.change(await screen.findByLabelText("6桁の確認コード"), { target: { value: "123456" } });
-    fireEvent.click(screen.getByRole("button", { name: /確認してログイン/ }));
-    await waitFor(() => expect(verifyCode).toHaveBeenCalledWith("owner@example.com", "123456"));
-    expect(await screen.findByText("owner@example.com")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "ログアウト" })).toBeEnabled();
-    expect(screen.queryByRole("button", { name: /会員|Stripe|支払|申込/ })).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.pointerDown(document.querySelector(".account-profile-backdrop")!);
+    expect(onClose).toHaveBeenCalledTimes(2);
 
-    fireEvent.click(screen.getByRole("button", { name: "ログアウト" }));
-    await waitFor(() => expect(logout).toHaveBeenCalledOnce());
-    expect(await screen.findByText("ログアウトしました")).toBeInTheDocument();
-    expect(screen.getByLabelText("メールアドレス")).toBeInTheDocument();
-  });
-
-  it("disables code delivery outside the installed desktop app", async () => {
-    backend.isDesktop = false;
-    render(<AccountDialog locale="ja" onClose={() => undefined} />);
-    expect(await screen.findByLabelText("メールアドレス")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /確認コードを送る/ })).toBeDisabled();
-    expect(screen.getByText(/インストール版Windowsアプリ/)).toBeInTheDocument();
+    unmount();
+    expect(trigger).toHaveFocus();
+    trigger.remove();
   });
 });

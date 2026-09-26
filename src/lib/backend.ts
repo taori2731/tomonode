@@ -77,7 +77,7 @@ import type {
 import { isValidDeleteConfirmation } from "./deleteConfirmation";
 import { getNetworkProtocolForServerType, getServerMaxPlayers, isPalworldServer } from "./gameAdapter";
 import { ACCOUNT_API_BASE_URL } from "./accountConfig";
-import type { AccountProfile } from "./accountTypes";
+import type { AccountAvatarMimeType, AccountPasswordChallenge, AccountPasswordSetup, AccountProfile } from "./accountTypes";
 
 const inDesktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -298,6 +298,15 @@ export const backend = {
   accountLoadSession: () => desktopOr<AccountProfile | null>("account_load_session", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => null),
   accountRequestCode: (email: string) => desktopOr<void>("account_request_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, email }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
   accountVerifyCode: (email: string, code: string) => desktopOr<AccountProfile>("account_verify_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, email, code }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
+  accountPasswordLogin: (email: string, password: string) => desktopOr<AccountPasswordChallenge>("account_password_login", { apiBaseUrl: ACCOUNT_API_BASE_URL, email, password }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
+  accountVerifyLoginCode: (challengeId: string, code: string) => desktopOr<AccountProfile>("account_verify_login_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, challengeId, code }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
+  accountRequestEnrollmentCode: (email: string) => desktopOr<void>("account_request_enrollment_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, email }, () => Promise.reject(new Error("アカウント登録はインストール版Windowsアプリで利用できます"))),
+  accountVerifyEnrollmentCode: (email: string, code: string) => desktopOr<AccountPasswordSetup>("account_verify_enrollment_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, email, code }, () => Promise.reject(new Error("アカウント登録はインストール版Windowsアプリで利用できます"))),
+  accountEnrollPassword: (email: string, setupToken: string, password: string) => desktopOr<void>("account_enroll_password", { apiBaseUrl: ACCOUNT_API_BASE_URL, email, setupToken, password }, () => Promise.reject(new Error("アカウント登録はインストール版Windowsアプリで利用できます"))),
+  accountRequestPasswordReset: (email?: string) => desktopOr<void>("account_request_password_reset", { apiBaseUrl: ACCOUNT_API_BASE_URL, email: email ?? null }, () => Promise.reject(new Error("パスワード再設定はインストール版Windowsアプリで利用できます"))),
+  accountUpdateDisplayName: (displayName: string) => desktopOr<AccountProfile>("account_update_display_name", { apiBaseUrl: ACCOUNT_API_BASE_URL, displayName }, () => Promise.reject(new Error("表示名の変更はインストール版Windowsアプリで利用できます"))),
+  accountUploadAvatar: (mimeType: AccountAvatarMimeType, dataBase64: string) => desktopOr<void>("account_upload_avatar", { apiBaseUrl: ACCOUNT_API_BASE_URL, mimeType, dataBase64 }, () => Promise.reject(new Error("プロフィール画像の変更はインストール版Windowsアプリで利用できます"))),
+  accountRemoveAvatar: () => desktopOr<void>("account_remove_avatar", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => Promise.reject(new Error("プロフィール画像の変更はインストール版Windowsアプリで利用できます"))),
   accountLogout: () => desktopOr<void>("account_logout", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => undefined),
   quitApp: () => desktopOr<void>("quit_app", {}, () => undefined),
   checkAppUpdate: (endpoint?: string) => desktopOr<AppUpdateInfo>("check_app_update", { endpoint: endpoint?.trim() || null }, () => ({ configured: true, currentVersion: packageMetadata.version, available: false })),

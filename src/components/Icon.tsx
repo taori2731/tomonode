@@ -4,7 +4,7 @@ export type IconName =
   | "add" | "back" | "chart" | "check" | "chevron" | "clipboard" | "clock"
   | "close" | "console" | "download" | "file" | "folder" | "gear" | "info"
   | "invite" | "list" | "memory" | "menu" | "moon" | "more" | "play"
-  | "plugin" | "refresh" | "restart" | "search" | "server" | "stop" | "sun" | "trash" | "users";
+  | "lock" | "plugin" | "refresh" | "restart" | "search" | "server" | "stop" | "sun" | "trash" | "user" | "users";
 
 const paths: Record<IconName, React.ReactNode> = {
   add: <><path d="M12 5v14M5 12h14" /></>,
@@ -23,6 +23,7 @@ const paths: Record<IconName, React.ReactNode> = {
   info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></>,
   invite: <><circle cx="9" cy="8" r="3"/><path d="M3 20c0-4 2-7 6-7s6 3 6 7M18 8v6M15 11h6"/></>,
   list: <><path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></>,
+  lock: <><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></>,
   memory: <><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M19 9h3M2 15h3M19 15h3"/></>,
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   moon: <path d="M20 15.5A8 8 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z" />,
@@ -36,6 +37,7 @@ const paths: Record<IconName, React.ReactNode> = {
   stop: <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" stroke="none" />,
   sun: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></>,
   trash: <><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6"/></>,
+  user: <><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></>,
   users: <><circle cx="9" cy="8" r="3"/><path d="M3 20c0-4 2-7 6-7s6 3 6 7M16 5a3 3 0 0 1 0 6M17 14c2.5.5 4 2.5 4 6"/></>,
 };
 

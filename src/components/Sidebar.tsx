@@ -8,12 +8,16 @@ import { getNetworkProtocolForServerType, getServerVersionLabel, isPalworldServe
 import { homeText } from "../lib/homeLocale";
 import { workspaceText } from "../lib/workspaceLocale";
 import { brand } from "../lib/brand";
+import { accountSidebarText } from "../lib/accountSidebarLocale";
+import type { AccountProfile } from "../lib/accountTypes";
 
 interface Props {
   servers: ServerProfile[];
   serverIcons: Record<string, string>;
   selectedId?: string;
   statuses: Record<string, RuntimeStatus>;
+  accountProfile: AccountProfile | null;
+  onAccountOpen: () => void;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onAppSettings: () => void;
@@ -33,9 +37,10 @@ function sameDisplayedStatuses(servers: ServerProfile[], left: Record<string, Ru
   });
 }
 
-export const Sidebar = memo(function Sidebar({ servers, serverIcons, selectedId, statuses, onSelect, onCreate, onAppSettings, onImport, onDelete, availableTabs, activeSection, onSectionNavigate }: Props) {
+export const Sidebar = memo(function Sidebar({ servers, serverIcons, selectedId, statuses, accountProfile, onAccountOpen, onSelect, onCreate, onAppSettings, onImport, onDelete, availableTabs, activeSection, onSectionNavigate }: Props) {
   const { locale, t } = useI18n();
   const workspace = workspaceText(locale);
+  const account = accountSidebarText(locale);
   const [query, setQuery] = useState("");
   const filteredServers = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -89,6 +94,17 @@ export const Sidebar = memo(function Sidebar({ servers, serverIcons, selectedId,
         ) : null}
       </div>
       <div className="sidebar-summary"><span className="status-label running"><i />{t("running")}</span><strong>{runningCount}<span> / {servers.length}</span></strong></div>
+      <div className="sidebar-account-area" aria-label={account.account}>
+        <button className="sidebar-account-card" type="button" onClick={onAccountOpen} aria-label={accountProfile ? `${account.profileSettings}: ${accountProfile.displayName || accountProfile.email}` : account.loginCta}>
+          <span className="sidebar-account-avatar">{accountProfile?.avatarDataUrl ? <img src={accountProfile.avatarDataUrl} alt="" /> : <Icon name="user" size={22} />}</span>
+          <span className="sidebar-account-copy">
+            <strong>{accountProfile ? accountProfile.displayName || accountProfile.email.split("@")[0] : account.signedOutLabel}</strong>
+            <small className={accountProfile ? "is-online" : ""}><i />{accountProfile ? account.deviceLoginActive : account.loginPrompt}</small>
+          </span>
+          <Icon className="sidebar-account-chevron" name="chevron" size={17} />
+        </button>
+        {!accountProfile ? <button className="sidebar-login-button" type="button" onClick={onAccountOpen}>{account.loginCta}</button> : null}
+      </div>
       <div className="sidebar-footer">
         <button type="button" onClick={onAppSettings}><Icon name="gear" />{t("settings")}</button>
         <button type="button" onClick={onAppSettings}><Icon name="info" />{t("information")}</button>
@@ -98,6 +114,8 @@ export const Sidebar = memo(function Sidebar({ servers, serverIcons, selectedId,
 }, (previous, next) => previous.servers === next.servers
   && previous.serverIcons === next.serverIcons
   && previous.selectedId === next.selectedId
+  && previous.accountProfile === next.accountProfile
+  && previous.onAccountOpen === next.onAccountOpen
   && previous.activeSection === next.activeSection
   && previous.availableTabs === next.availableTabs
   && previous.onSelect === next.onSelect
