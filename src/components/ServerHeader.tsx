@@ -23,7 +23,7 @@ export function ServerHeader({ server, serverIcon, status, busyAction, onStart, 
   const transitioning = status.state === "starting" || status.state === "stopping" || status.state === "restarting";
   const visibleBuild = server.serverType === "bedrock" || isPalworldServer(server) ? "" : server.distributionBuild ? ` build ${server.distributionBuild}` : "";
   return (
-    <section className={`server-hero${compact ? " compact" : ""}`}>
+    <section className={`server-hero${compact ? " compact" : ""}${serverIcon ? "" : " default-icon"}`}>
       <ServerIcon source={serverIcon} className="server-art" />
       <div className="server-heading">
         <h1>{server.name}</h1>

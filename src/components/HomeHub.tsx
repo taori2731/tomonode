@@ -34,7 +34,7 @@ interface HomeServerCardProps {
 const HomeServerCard = memo(function HomeServerCard({ server, status, serverIcon, selected, stateLabel, onSelect }: HomeServerCardProps) {
   const state = status?.state ?? "stopped";
   return <button className={`home-server-card${selected ? " selected" : ""}`} type="button" aria-pressed={selected} onClick={() => onSelect(server.id)}>
-    <div className={`home-server-cover ${server.serverType}`}><ServerIcon source={serverIcon} /><span className={`hero-status ${state}`}><i />{stateLabel}</span></div>
+    <div className={`home-server-cover ${server.serverType}${serverIcon ? "" : " default-icon"}`}><ServerIcon source={serverIcon} /><span className={`hero-status ${state}`}><i />{stateLabel}</span></div>
     <div className="home-server-copy"><strong>{server.name}</strong><small>{serverTypeLabel[server.serverType]} · {getServerVersionLabel(server)}</small><span><Icon name="users" size={15} />{status ? `${status.playerCount} / ${status.maxPlayers}` : "—"}</span></div>
   </button>;
 }, (previous, next) => previous.server === next.server

@@ -84,7 +84,6 @@ ENGLISH_OVERRIDES = {
     "友達と遊べるようにする": "Make the server available to friends",
     "バックアップして導入": "Back up and install",
     "原因を調べる": "Run diagnostics",
-    "本番広告、決済、ライセンス認証は未接続です。ログ、ワールド名、プレイヤー名、IPアドレスを広告目的で送信しません。": "Production advertising, payments, and license authentication are not connected. Logs, world names, player names, and IP addresses are not sent for advertising.",
     "CPU、メモリ、GPU、Java、保存先の情報はローカルで処理し、自動送信しません。": "CPU, memory, GPU, Java, and storage information is processed locally and is not sent automatically.",
     "管理画面・SQLite・バックアップは公開しません。": "The management interface, SQLite database, and backups are never exposed.",
     "ログは外部へ送信しません。": "Logs are not sent to external services.",
@@ -178,49 +177,42 @@ RESIDUAL_GLOSSARY = {
 
 LOCALE_OVERRIDES = {
     "de": {
-        "本番広告、決済、ライセンス認証は未接続です。ログ、ワールド名、プレイヤー名、IPアドレスを広告目的で送信しません。": "Produktivwerbung, Zahlungen und Lizenzprüfung sind nicht verbunden. Protokolle, Weltnamen, Spielernamen und IP-Adressen werden nicht zu Werbezwecken gesendet.",
         "CPU、メモリ、GPU、Java、保存先の情報はローカルで処理し、自動送信しません。": "Informationen zu CPU, Arbeitsspeicher, GPU, Java und Speicherort werden lokal verarbeitet und nicht automatisch gesendet.",
         "管理画面・SQLite・バックアップは公開しません。": "Verwaltungsoberfläche, SQLite-Datenbank und Sicherungen werden niemals veröffentlicht.",
         "ログは外部へ送信しません。": "Protokolle werden nicht an externe Dienste gesendet.",
         "コピー": "Kopieren", "バックアップ": "Sicherungen", "PCを診断": "Diesen PC prüfen", "保存先": "Speicherort", "最近のログ": "Letzte Protokolle", "プレイヤー": "Spieler", "使用メモリ": "Speichernutzung", "起動時間": "Laufzeit", "[[VAR0]]時間 [[VAR1]]分": "[[VAR0]] Stunden [[VAR1]] Minuten",
     },
     "es": {
-        "本番広告、決済、ライセンス認証は未接続です。ログ、ワールド名、プレイヤー名、IPアドレスを広告目的で送信しません。": "La publicidad de producción, los pagos y la autenticación de licencias no están conectados. Los registros, nombres de mundos, nombres de jugadores y direcciones IP no se envían con fines publicitarios.",
         "CPU、メモリ、GPU、Java、保存先の情報はローカルで処理し、自動送信しません。": "La información de CPU, memoria, GPU, Java y almacenamiento se procesa localmente y no se envía automáticamente.",
         "管理画面・SQLite・バックアップは公開しません。": "La interfaz de administración, la base de datos SQLite y las copias de seguridad nunca se exponen.",
         "ログは外部へ送信しません。": "Los registros no se envían a servicios externos.",
         "コピー": "Copiar", "バックアップ": "Copias de seguridad", "PCを診断": "Diagnosticar este PC", "保存先": "Ubicación de almacenamiento", "最近のログ": "Registros recientes", "プレイヤー": "Jugadores", "使用メモリ": "Uso de memoria", "起動時間": "Tiempo activo", "[[VAR0]]時間 [[VAR1]]分": "[[VAR0]] horas [[VAR1]] minutos",
     },
     "fr": {
-        "本番広告、決済、ライセンス認証は未接続です。ログ、ワールド名、プレイヤー名、IPアドレスを広告目的で送信しません。": "La publicité en production, les paiements et l’authentification des licences ne sont pas connectés. Les journaux, noms de mondes, noms de joueurs et adresses IP ne sont pas envoyés à des fins publicitaires.",
         "CPU、メモリ、GPU、Java、保存先の情報はローカルで処理し、自動送信しません。": "Les informations sur le processeur, la mémoire, le GPU, Java et le stockage sont traitées localement et ne sont pas envoyées automatiquement.",
         "管理画面・SQLite・バックアップは公開しません。": "L’interface d’administration, la base SQLite et les sauvegardes ne sont jamais exposées.",
         "ログは外部へ送信しません。": "Les journaux ne sont pas envoyés à des services externes.",
         "コピー": "Copier", "バックアップ": "Sauvegardes", "PCを診断": "Diagnostiquer ce PC", "保存先": "Emplacement de stockage", "最近のログ": "Journaux récents", "プレイヤー": "Joueurs", "使用メモリ": "Utilisation de la mémoire", "起動時間": "Durée de fonctionnement", "[[VAR0]]時間 [[VAR1]]分": "[[VAR0]] heures [[VAR1]] minutes",
     },
     "ko": {
-        "本番広告、決済、ライセンス認証は未接続です。ログ、ワールド名、プレイヤー名、IPアドレスを広告目的で送信しません。": "운영 광고, 결제 및 라이선스 인증은 연결되어 있지 않습니다. 로그, 월드 이름, 플레이어 이름 및 IP 주소는 광고 목적으로 전송하지 않습니다.",
         "CPU、メモリ、GPU、Java、保存先の情報はローカルで処理し、自動送信しません。": "CPU, 메모리, GPU, Java 및 저장 위치 정보는 로컬에서 처리하며 자동으로 전송하지 않습니다.",
         "管理画面・SQLite・バックアップは公開しません。": "관리 화면, SQLite 데이터베이스 및 백업은 외부에 공개하지 않습니다.",
         "ログは外部へ送信しません。": "로그는 외부 서비스로 전송하지 않습니다.",
         "コピー": "복사", "バックアップ": "백업", "PCを診断": "이 PC 진단", "保存先": "저장 위치", "最近のログ": "최근 로그", "プレイヤー": "플레이어", "使用メモリ": "메모리 사용량", "起動時間": "가동 시간", "[[VAR0]]時間 [[VAR1]]分": "[[VAR0]]시간 [[VAR1]]분",
     },
     "pt-BR": {
-        "本番広告、決済、ライセンス認証は未接続です。ログ、ワールド名、プレイヤー名、IPアドレスを広告目的で送信しません。": "Publicidade de produção, pagamentos e autenticação de licença não estão conectados. Logs, nomes de mundos, nomes de jogadores e endereços IP não são enviados para fins publicitários.",
         "CPU、メモリ、GPU、Java、保存先の情報はローカルで処理し、自動送信しません。": "Informações de CPU, memória, GPU, Java e armazenamento são processadas localmente e não são enviadas automaticamente.",
         "管理画面・SQLite・バックアップは公開しません。": "A interface de administração, o banco SQLite e os backups nunca são expostos.",
         "ログは外部へ送信しません。": "Os logs não são enviados a serviços externos.",
         "コピー": "Copiar", "バックアップ": "Backups", "PCを診断": "Diagnosticar este PC", "保存先": "Local de armazenamento", "最近のログ": "Logs recentes", "プレイヤー": "Jogadores", "使用メモリ": "Uso de memória", "起動時間": "Tempo de atividade", "[[VAR0]]時間 [[VAR1]]分": "[[VAR0]] horas [[VAR1]] minutos",
     },
     "zh-CN": {
-        "本番広告、決済、ライセンス認証は未接続です。ログ、ワールド名、プレイヤー名、IPアドレスを広告目的で送信しません。": "生产环境广告、支付和许可证验证均未接入。日志、世界名称、玩家名称和 IP 地址不会用于广告，也不会为此目的发送。",
         "CPU、メモリ、GPU、Java、保存先の情報はローカルで処理し、自動送信しません。": "CPU、内存、GPU、Java 和存储位置等信息仅在本机处理，不会自动发送。",
         "管理画面・SQLite・バックアップは公開しません。": "管理界面、SQLite 数据库和备份绝不会对外公开。",
         "ログは外部へ送信しません。": "日志不会发送到外部服务。",
         "コピー": "复制", "バックアップ": "备份", "PCを診断": "诊断此电脑", "保存先": "存储位置", "最近のログ": "最近日志", "プレイヤー": "玩家", "使用メモリ": "内存使用量", "起動時間": "运行时间", "[[VAR0]]時間 [[VAR1]]分": "[[VAR0]] 小时 [[VAR1]] 分钟",
     },
     "zh-TW": {
-        "本番広告、決済、ライセンス認証は未接続です。ログ、ワールド名、プレイヤー名、IPアドレスを広告目的で送信しません。": "正式環境廣告、付款與授權驗證均未連接。日誌、世界名稱、玩家名稱與 IP 位址不會用於廣告，也不會為此目的傳送。",
         "CPU、メモリ、GPU、Java、保存先の情報はローカルで処理し、自動送信しません。": "CPU、記憶體、GPU、Java 與儲存位置等資訊僅在本機處理，不會自動傳送。",
         "管理画面・SQLite・バックアップは公開しません。": "管理介面、SQLite 資料庫與備份絕不會對外公開。",
         "ログは外部へ送信しません。": "日誌不會傳送到外部服務。",

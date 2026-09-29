@@ -373,6 +373,15 @@ describe(brand.productName, () => {
     expect(screen.getByRole("button", { name: "標準に戻す" })).toBeEnabled();
   });
 
+  it("uses the TomoNode image for servers without a custom icon", async () => {
+    const { container } = render(<App />);
+    await screen.findByRole("heading", { name: "Survival World" });
+    const defaultIcon = "/assets/tomonode-icon-bg-black.png";
+    expect(container.querySelector(".server-row-main img")).toHaveAttribute("src", defaultIcon);
+    expect(container.querySelector(".home-server-cover.default-icon img")).toHaveAttribute("src", defaultIcon);
+    expect(container.querySelector(".home-inspector .server-hero.default-icon .server-art")).toHaveAttribute("src", defaultIcon);
+  });
+
   it("applies an update only after safety review, warning acceptance and server-name confirmation", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);

@@ -1,4 +1,4 @@
-export const DEFAULT_SERVER_ICON = "/assets/voxel-server-island.png";
+export const DEFAULT_SERVER_ICON = "/assets/tomonode-icon-bg-black.png";
 
 const STORAGE_KEY = "server-hub:server-icons:v1";
 const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
