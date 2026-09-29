@@ -36,7 +36,8 @@ async function main() {
     browser = await chromium.launch({ headless: true, ...(process.env.TOMONODE_CHROME_PATH
       ? { executablePath: process.env.TOMONODE_CHROME_PATH }
       : { channel: "chrome" }) });
-    const page = await browser.newPage({ viewport: { width: 1680, height: 940 }, deviceScaleFactor: 1 });
+    const page = await browser.newPage({ viewport: { width: 1680, height: 940 }, deviceScaleFactor: 1, locale: "en-US" });
+    await page.addInitScript(() => localStorage.setItem("server-hub:language:v1", "ja"));
     const pageErrors = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
     page.on("console", (message) => {
@@ -54,6 +55,8 @@ async function main() {
     });
 
     await page.goto(baseUrl, { waitUntil: "networkidle" });
+    const migrationNotice = page.locator(".migration-notice-backdrop");
+    if (await migrationNotice.isVisible()) await migrationNotice.getByRole("button").click();
     await page.locator(".sidebar-account-card").click();
     const dialog = page.getByRole("dialog", { name: "アカウント設定" });
     await dialog.waitFor();
