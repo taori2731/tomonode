@@ -2,10 +2,12 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { backend } from "../lib/backend";
 import { accountText } from "../lib/accountLocale";
+import { accountSettingsText } from "../lib/accountSettingsLocale";
 import type { AccountProfile } from "../lib/accountTypes";
 import { AccountDialog } from "./AccountDialog";
 
 const copy = accountText("ja");
+const settingsCopy = accountSettingsText("ja");
 const profile: AccountProfile = {
   email: "player@example.com",
   displayName: "Player001",
@@ -28,23 +30,26 @@ function renderAccount(onClose = vi.fn(), initialProfile: AccountProfile | null 
 }
 
 describe("AccountDialog", () => {
-  it("opens the signed-in profile as a compact popover and navigates to security and back", () => {
+  it("opens the signed-in account as a three-tab settings dialog", () => {
     renderAccount();
 
-    const menu = screen.getByRole("dialog", { name: copy.profileSettings });
-    expect(menu).toHaveClass("account-dialog-popover");
+    const menu = screen.getByRole("dialog", { name: copy.accountSettings });
+    expect(menu).toHaveClass("account-settings-dialog");
     expect(menu).toHaveTextContent(profile.displayName);
     expect(menu).toHaveTextContent(profile.email);
-    expect(menu).toHaveTextContent(copy.freePlan);
-    expect(screen.queryByRole("heading", { name: copy.title })).not.toBeInTheDocument();
+    expect(within(menu).getAllByRole("tab")).toHaveLength(3);
+    expect(within(menu).getByRole("tab", { name: settingsCopy.profileTab })).toHaveAttribute("aria-selected", "true");
+    expect(within(menu).getByText(settingsCopy.userId)).toBeInTheDocument();
 
-    fireEvent.click(within(menu).getByRole("button", { name: copy.security }));
-    const security = screen.getByRole("dialog", { name: copy.security });
-    expect(security).not.toHaveClass("account-dialog-popover");
-    expect(security).toHaveTextContent(profile.email);
+    fireEvent.click(within(menu).getByRole("tab", { name: copy.security }));
+    expect(within(menu).getByRole("tab", { name: copy.security })).toHaveAttribute("aria-selected", "true");
+    expect(within(menu).getAllByText(settingsCopy.currentDevice)).toHaveLength(2);
+    expect(within(menu).getByRole("button", { name: new RegExp(copy.otherDeviceLogout) })).toBeDisabled();
 
-    fireEvent.click(within(security).getByRole("button", { name: copy.profileSettings }));
-    expect(screen.getByRole("dialog", { name: copy.profileSettings })).toHaveClass("account-dialog-popover");
+    fireEvent.click(within(menu).getByRole("tab", { name: copy.plan }));
+    expect(within(menu).getByRole("tab", { name: copy.plan })).toHaveAttribute("aria-selected", "true");
+    expect(within(menu).getByText(settingsCopy.supporterPending)).toBeInTheDocument();
+    expect(within(menu).getByRole("button", { name: new RegExp(copy.seePlans) })).toBeDisabled();
   });
 
   it("lets a signed-in user edit their display name and synchronizes the profile change", async () => {
@@ -52,9 +57,8 @@ describe("AccountDialog", () => {
     const updated = { ...profile, displayName: "New Player" };
     const updateName = vi.spyOn(backend, "accountUpdateDisplayName").mockResolvedValue(updated);
     const { onProfileChange } = renderAccount();
-    const menu = screen.getByRole("dialog", { name: copy.profileSettings });
+    const menu = screen.getByRole("dialog", { name: copy.accountSettings });
 
-    fireEvent.click(within(menu).getByRole("button", { name: copy.edit }));
     fireEvent.change(within(menu).getByRole("textbox", { name: copy.displayName }), { target: { value: updated.displayName } });
     fireEvent.click(within(menu).getByRole("button", { name: copy.saveProfile }));
 
@@ -71,7 +75,7 @@ describe("AccountDialog", () => {
     expect(screen.queryByRole("heading", { name: copy.title })).not.toBeInTheDocument();
 
     rerender(<AccountDialog locale="ja" initialProfile={profile} profileLoaded={true} onProfileChange={vi.fn()} onClose={vi.fn()} />);
-    expect(await screen.findByRole("dialog", { name: copy.profileSettings })).toHaveTextContent(profile.displayName);
+    expect(await screen.findByRole("dialog", { name: copy.accountSettings })).toHaveTextContent(profile.displayName);
   });
 
   it("closes on Escape and outside pointer input while keeping keyboard focus inside", () => {
@@ -80,15 +84,15 @@ describe("AccountDialog", () => {
     document.body.append(trigger);
     trigger.focus();
     const { onClose, unmount } = renderAccount();
-    const menu = screen.getByRole("dialog", { name: copy.profileSettings });
+    const menu = screen.getByRole("dialog", { name: copy.accountSettings });
     expect(menu).toHaveFocus();
 
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
-    expect(within(menu).getByRole("button", { name: copy.signOut })).toHaveFocus();
+    expect(within(menu).getByRole("button", { name: copy.accountSettings })).toHaveFocus();
 
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
-    fireEvent.pointerDown(document.querySelector(".account-profile-backdrop")!);
+    fireEvent.pointerDown(document.querySelector(".account-backdrop")!);
     expect(onClose).toHaveBeenCalledTimes(2);
 
     unmount();
