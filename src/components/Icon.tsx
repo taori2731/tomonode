@@ -4,19 +4,22 @@ export type IconName =
   | "add" | "back" | "chart" | "check" | "chevron" | "clipboard" | "clock"
   | "close" | "console" | "download" | "file" | "folder" | "gear" | "info"
   | "invite" | "list" | "memory" | "menu" | "moon" | "more" | "play"
-  | "lock" | "plugin" | "refresh" | "restart" | "search" | "server" | "stop" | "sun" | "trash" | "user" | "users";
+  | "lock" | "plugin" | "refresh" | "restart" | "search" | "server" | "stop" | "sun" | "trash" | "user" | "users"
+  | "camera" | "edit" | "shield";
 
 const paths: Record<IconName, React.ReactNode> = {
   add: <><path d="M12 5v14M5 12h14" /></>,
   back: <path d="m15 18-6-6 6-6" />,
   chart: <><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></>,
   check: <path d="m5 12 4 4L19 6" />,
+  camera: <><rect x="3" y="6" width="18" height="14" rx="2"/><path d="m8 6 1.5-2h5L16 6"/><circle cx="12" cy="13" r="3.5"/></>,
   chevron: <path d="m9 18 6-6-6-6" />,
   clipboard: <><rect x="8" y="4" width="11" height="16" rx="2"/><path d="M16 4V2H5a2 2 0 0 0-2 2v13h5"/></>,
   clock: <><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></>,
   close: <path d="m6 6 12 12M18 6 6 18" />,
   console: <><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></>,
   download: <><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M4 19h16"/></>,
+  edit: <><path d="m4 16-.7 4.7L8 20l10.8-10.8a2 2 0 0 0-2.8-2.8L5.2 17.2z"/><path d="m14.5 7.5 2.8 2.8"/></>,
   file: <><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/></>,
   folder: <path d="M3 6h7l2 2h9v11H3z" />,
   gear: <><circle cx="12" cy="12" r="3"/><path d="M19 13.5v-3l-2-.7-.8-1.8.9-1.9L15 4l-1.9.9-1.9-.8L10.5 2h-3l-.7 2.1-1.8.8L3.1 4 1 6.1 1.9 8l-.8 1.8-2.1.7v3l2.1.7.8 1.8-.9 1.9L3.1 20l1.9-.9 1.8.8.7 2.1h3l.7-2.1 1.9-.8 1.9.9 2.1-2.1-.9-1.9.8-1.8z" transform="translate(2) scale(.83)"/></>,
@@ -33,6 +36,7 @@ const paths: Record<IconName, React.ReactNode> = {
   refresh: <><path d="M20 7v5h-5M4 17v-5h5"/><path d="M18.5 9A7 7 0 0 0 6 6.5L4 9M5.5 15A7 7 0 0 0 18 17.5l2-2.5"/></>,
   restart: <><path d="M20 7v5h-5"/><path d="M18.5 9A7 7 0 1 0 19 15"/></>,
   search: <><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></>,
+  shield: <><path d="M12 2 4 5v6c0 5.2 3.4 8.8 8 11 4.6-2.2 8-5.8 8-11V5z"/><path d="m9 12 2 2 4-4"/></>,
   server: <><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.01M7 17h.01M11 6h7M11 17h7"/></>,
   stop: <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" stroke="none" />,
   sun: <><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></>,

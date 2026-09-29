@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import type { AppLocale } from "../lib/i18n";
 import { accountText } from "../lib/accountLocale";
+import { accountSettingsText } from "../lib/accountSettingsLocale";
+import { AvatarImageError, prepareAvatarUpload } from "../lib/avatarImage";
 import { backend } from "../lib/backend";
-import type { AccountAvatarMimeType, AccountPasswordSetup, AccountProfile } from "../lib/accountTypes";
+import type { AccountPasswordSetup, AccountProfile } from "../lib/accountTypes";
+import { AccountSettingsPanel } from "./AccountSettingsPanel";
 import { Icon } from "./Icon";
 
-type AccountView = "checking" | "login" | "login-code" | "enroll-email" | "enroll-code" | "enroll-password" | "reset" | "profile" | "security" | "settings";
+type AccountView = "checking" | "login" | "login-code" | "enroll-email" | "enroll-code" | "enroll-password" | "reset" | "profile" | "security" | "plan" | "settings";
 
 const emailIsValid = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 const passwordIsValid = (value: string) => {
@@ -16,7 +19,6 @@ const displayNameIsValid = (value: string) => {
   const normalized = value.trim();
   return Array.from(normalized).length >= 1 && Array.from(normalized).length <= 32 && !/[\u0000-\u001f\u007f]/u.test(normalized);
 };
-const avatarTypes: readonly AccountAvatarMimeType[] = ["image/png", "image/jpeg", "image/webp"];
 
 interface Props {
   locale: AppLocale;
@@ -28,6 +30,7 @@ interface Props {
 
 export function AccountDialog({ locale, initialProfile, profileLoaded, onProfileChange, onClose }: Props) {
   const copy = useMemo(() => accountText(locale), [locale]);
+  const settingsCopy = useMemo(() => accountSettingsText(locale), [locale]);
   const [view, setView] = useState<AccountView>(profileLoaded ? initialProfile ? "profile" : "login" : "checking");
   const [profile, setProfile] = useState<AccountProfile | null>(initialProfile);
   const [email, setEmail] = useState("");
@@ -37,8 +40,7 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
   const [code, setCode] = useState("");
   const [challengeId, setChallengeId] = useState("");
   const [setup, setSetup] = useState<AccountPasswordSetup | null>(null);
-  const [displayName, setDisplayName] = useState("");
-  const [editingProfile, setEditingProfile] = useState(false);
+  const [displayName, setDisplayName] = useState(initialProfile?.displayName ?? "");
   const [loading, setLoading] = useState(!profileLoaded && !initialProfile);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -64,11 +66,9 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
       if (initialProfile) setDisplayName(initialProfile.displayName ?? "");
       if (!previous && initialProfile) {
         setView("profile");
-        setEditingProfile(false);
         setLoading(false);
       } else if (previous && !initialProfile && profileLoaded) {
         setView("login");
-        setEditingProfile(false);
       }
     }
     if (profileLoaded) {
@@ -93,7 +93,7 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
       if (!dialog) return;
       const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
-      )).filter((element) => !element.hidden);
+      )).filter((element) => !element.hidden && element.tabIndex >= 0);
       if (focusable.length === 0) {
         event.preventDefault();
         dialog.focus();
@@ -281,7 +281,6 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
     try {
       const updated = await backend.accountUpdateDisplayName(normalized);
       publishProfile(updated);
-      setEditingProfile(false);
       setNotice(copy.profileSaved);
     } catch (reason) {
       setError(String(reason));
@@ -312,24 +311,18 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
     if (!file || !profile) return;
-    if (!avatarTypes.includes(file.type as AccountAvatarMimeType)) { setError(copy.avatarTypeError); return; }
-    if (file.size > 128 * 1024) { setError(copy.avatarSizeError); return; }
-    const mimeType = file.type as AccountAvatarMimeType;
     setBusy(true);
     setError("");
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      let binary = "";
-      for (let offset = 0; offset < bytes.length; offset += 32 * 1024) {
-        binary += String.fromCharCode(...bytes.subarray(offset, offset + 32 * 1024));
-      }
-      const dataBase64 = btoa(binary);
-      const preview = `data:${mimeType};base64,${dataBase64}`;
-      await backend.accountUploadAvatar(mimeType, dataBase64);
-      publishProfile({ ...profile, avatarDataUrl: preview });
+      const prepared = await prepareAvatarUpload(file);
+      await backend.accountUploadAvatar(prepared.mimeType, prepared.dataBase64);
+      publishProfile({ ...profile, avatarDataUrl: prepared.preview });
       setNotice(copy.profileSaved);
     } catch (reason) {
-      setError(String(reason));
+      setError(reason instanceof AvatarImageError
+        ? reason.reason === "size" ? copy.avatarSizeError
+          : reason.reason === "type" || reason.reason === "decode" ? settingsCopy.imageDecodeError : settingsCopy.imageEncodeError
+        : String(reason));
     } finally {
       setBusy(false);
     }
@@ -355,52 +348,19 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
     : view === "enroll-email" || view === "enroll-code" || view === "enroll-password" ? copy.enroll
       : view === "reset" ? copy.forgotPassword
         : view === "security" ? copy.security : copy.accountSettings;
-  const compact = view === "profile" || view === "checking";
-  const displayLabel = profile?.displayName || profile?.email.split("@")[0] || "";
+  const settingsOpen = Boolean(profile && (view === "profile" || view === "security" || view === "plan" || view === "settings"));
+  const compact = view === "checking";
 
   return (
     <div className={`modal-backdrop account-backdrop${compact ? " account-profile-backdrop" : ""}`} onPointerDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section ref={dialogRef} tabIndex={-1} className={`wizard account-dialog${compact ? " account-dialog-popover" : ""}${editingProfile ? " is-editing" : ""}`} role="dialog" aria-modal="true" aria-label={compact ? copy.profileSettings : undefined} aria-labelledby={compact ? undefined : "account-dialog-title"}>
-        {view === "checking" ? <div className="account-profile-loading" role="status"><span className="spinner" /><strong>{copy.loading}</strong></div> : null}
-        {compact && profile ? <div className="account-profile-menu">
-          <div className="account-profile-identity">
-            <div className="account-profile-avatar">{profile.avatarDataUrl ? <img src={profile.avatarDataUrl} alt="" /> : <Icon name="user" size={27} />}</div>
-            <div className="account-profile-labels">
-              {editingProfile ? <label className="account-display-name-field"><span>{copy.displayName}</span><input aria-label={copy.displayName} maxLength={32} value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={busy} /></label> : <strong title={displayLabel}>{displayLabel}</strong>}
-              <span title={profile.email}>{profile.email}</span>
-            </div>
-            {!editingProfile ? <button className="account-edit-button" type="button" onClick={() => { setDisplayName(profile.displayName || ""); setEditingProfile(true); setError(""); setNotice(""); }}>{copy.edit}</button> : null}
-            <input ref={avatarInput} className="account-avatar-input" type="file" accept="image/png,image/jpeg,image/webp" aria-label={copy.avatar} tabIndex={-1} onChange={(event) => void uploadAvatar(event)} disabled={busy || !backend.isDesktop} />
-          </div>
-
-          {editingProfile ? <form className="account-profile-edit" onSubmit={(event) => void updateDisplayName(event)}>
-            <p>{copy.displayNameHint}</p>
-            <div className="account-avatar-actions">
-              <button className="secondary-button" type="button" onClick={() => avatarInput.current?.click()} disabled={busy || !backend.isDesktop}><Icon name="download" size={16} />{copy.chooseImage}</button>
-              {profile.avatarDataUrl ? <button className="small-button" type="button" onClick={() => void removeAvatar()} disabled={busy}><Icon name="trash" size={15} />{copy.removeAvatar}</button> : null}
-            </div>
-            <small>{copy.avatarHelp}</small>
-            {busy ? <span role="status">{copy.saving}</span> : null}
-            <div className="account-edit-actions">
-              <button className="primary-button" type="submit" disabled={busy || !backend.isDesktop}>{busy ? copy.saving : copy.saveProfile}</button>
-              <button className="small-button" type="button" disabled={busy} onClick={() => { setEditingProfile(false); setDisplayName(profile.displayName || ""); setError(""); setNotice(""); }}>{copy.close}</button>
-            </div>
-          </form> : null}
-
-          <div className="account-profile-plan">
-            <div><span>{copy.plan}</span><strong>{copy.freePlan}</strong></div>
-            <div className="account-profile-plan-action"><button type="button" disabled title={copy.preparing}>{copy.seePlans}<span aria-hidden="true"> →</span></button><small>{copy.preparing}</small></div>
-          </div>
-
-          <nav className="account-profile-menu-links" aria-label={copy.profileSettings}>
-            <button type="button" onClick={() => { setView("security"); setError(""); setNotice(""); }}><Icon name="lock" size={18} /><span>{copy.security}</span><Icon name="chevron" size={16} /></button>
-            <button type="button" onClick={() => { setView("settings"); setError(""); setNotice(""); }}><Icon name="gear" size={18} /><span>{copy.accountSettings}</span><Icon name="chevron" size={16} /></button>
-          </nav>
-
-          {notice ? <p className="account-compact-notice" role="status">{notice}</p> : null}
-          {error ? <p className="account-compact-error" role="alert">{error}</p> : null}
-          <div className="account-profile-logout"><button type="button" onClick={() => void signOut()} disabled={busy}>{busy ? copy.loading : copy.signOut}</button></div>
-        </div> : view === "checking" ? null : <>
+      <section ref={dialogRef} tabIndex={-1} className={`wizard account-dialog${compact ? " account-dialog-popover" : ""}${settingsOpen ? " account-settings-dialog" : ""}`} role="dialog" aria-modal="true" aria-label={compact ? copy.profileSettings : undefined} aria-labelledby={compact ? undefined : "account-dialog-title"}>
+        {settingsOpen && profile ? <AccountSettingsPanel locale={locale} profile={profile} view={view as "profile" | "security" | "plan" | "settings"}
+          displayName={displayName} busy={busy} isDesktop={backend.isDesktop} notice={notice} error={error} avatarInput={avatarInput}
+          onViewChange={(next) => { setView(next); setError(""); setNotice(""); }} onDisplayNameChange={setDisplayName}
+          onSaveDisplayName={(event) => void updateDisplayName(event)} onUploadAvatar={(event) => void uploadAvatar(event)}
+          onRemoveAvatar={() => void removeAvatar()} onPasswordChange={() => void (profile.hasPassword ? requestCurrentPasswordReset() : requestCurrentPasswordSetup())}
+          onSignOut={() => void signOut()} onClose={onClose} />
+          : view === "checking" ? <div className="account-profile-loading" role="status"><span className="spinner" /><strong>{copy.loading}</strong></div> : <>
           <header className="wizard-header account-dialog-header">
             <div><p className="wizard-kicker">TOMONODE</p><h2 id="account-dialog-title">{title}</h2></div>
             <button className="icon-button" type="button" aria-label={copy.close} title={copy.close} onClick={onClose}><Icon name="close" size={18} /></button>
@@ -466,24 +426,6 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
               {notice ? <p className="compatibility good" role="status">{notice}</p> : null}
               <button className="small-button" type="button" onClick={() => { setView("login"); setError(""); setNotice(""); }}>{copy.backToLogin}</button>
             </> : null}
-
-            {view === "security" && profile ? <div className="account-subview">
-              <button className="small-button account-back-button" type="button" onClick={() => { setView("profile"); setNotice(""); setError(""); }}><Icon name="back" size={16} />{copy.profileSettings}</button>
-              <p>{copy.emailLabel}: <strong>{profile.email}</strong></p>
-              <button className="account-setting-row" type="button" onClick={() => void (profile.hasPassword ? requestCurrentPasswordReset() : requestCurrentPasswordSetup())} disabled={busy || !backend.isDesktop}><Icon name="lock" size={18} /><span><strong>{profile.hasPassword ? copy.passwordChange : copy.enroll}</strong><small>{profile.hasPassword ? copy.resetSent : copy.passwordHint}</small></span><Icon name="chevron" size={16} /></button>
-              <button className="account-setting-row is-preparing" type="button" disabled title={copy.preparing}><Icon name="users" size={18} /><span><strong>{copy.emailChange}</strong><small>{copy.preparing}</small></span><span>{copy.preparing}</span></button>
-              <div className="account-setting-row is-active"><Icon name="lock" size={18} /><span><strong>{copy.twoFactor}</strong><small>{copy.emailCodeSignIn}</small></span><span>{copy.active}</span></div>
-              <button className="account-setting-row is-preparing" type="button" disabled title={copy.preparing}><Icon name="user" size={18} /><span><strong>{copy.devices}</strong><small>{copy.otherDeviceLogout}</small></span><span>{copy.preparing}</span></button>
-              <button className="account-setting-row is-preparing" type="button" disabled title={copy.preparing}><Icon name="trash" size={18} /><span><strong>{copy.deleteAccount}</strong><small>{copy.preparing}</small></span><span>{copy.preparing}</span></button>
-              {notice ? <p className="compatibility good" role="status">{notice}</p> : null}
-            </div> : null}
-
-            {view === "settings" && profile ? <div className="account-subview">
-              <button className="small-button account-back-button" type="button" onClick={() => { setView("profile"); setNotice(""); setError(""); }}><Icon name="back" size={16} />{copy.profileSettings}</button>
-              <button className="account-setting-row is-preparing" type="button" disabled title={copy.preparing}><Icon name="check" size={18} /><span><strong>{copy.autoLogin}</strong><small>{copy.preparing}</small></span><span>{copy.preparing}</span></button>
-              <button className="account-setting-row is-preparing" type="button" disabled title={copy.preparing}><Icon name="info" size={18} /><span><strong>{copy.dataCollection}</strong><small>{copy.preparing}</small></span><span>{copy.preparing}</span></button>
-              <button className="account-setting-row is-preparing" type="button" disabled title={copy.preparing}><Icon name="info" size={18} /><span><strong>{copy.privacy}</strong><small>{copy.preparing}</small></span><span>{copy.preparing}</span></button>
-            </div> : null}
 
             {error ? <p className="error-banner" role="alert"><Icon name="info" size={17} />{error}</p> : null}
           </div>
