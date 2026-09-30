@@ -34,13 +34,15 @@ const LOGIN_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 const PASSWORD_SETUP_PROOF_TTL_MS = 10 * 60 * 1000;
 const PASSWORD_SETUP_LEASE_MS = 2 * 60 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
-const MIN_PASSWORD_CODE_POINTS = 15;
+const MIN_PASSWORD_CODE_POINTS = 6;
 const MAX_PASSWORD_CODE_POINTS = 128;
 const MAX_AVATAR_BYTES = 128 * 1024;
 const MAX_AVATAR_DIMENSION = 1024;
 const MAX_AVATAR_PIXELS = 1024 * 1024;
 const MAX_AVATAR_REQUEST_BYTES = 180 * 1024;
 const MAX_DISPLAY_NAME_CODE_POINTS = 32;
+const BROWSER_AUTH_TTL_MS = 10 * 60 * 1000;
+const BROWSER_AUTH_POLL_INTERVAL_MS = 3 * 1000;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -210,6 +212,27 @@ function acceptablePassword(value: unknown): value is string {
   const points = Array.from(value).length;
   return points >= MIN_PASSWORD_CODE_POINTS && points <= MAX_PASSWORD_CODE_POINTS
     && new TextEncoder().encode(value).byteLength <= 512;
+}
+
+function browserUserCode(): string {
+  // Avoid visually ambiguous characters while retaining 40 bits of entropy.
+  const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+  const bytes = crypto.getRandomValues(new Uint8Array(8));
+  const value = [...bytes].map((byte) => alphabet[byte % alphabet.length]).join("");
+  return `${value.slice(0, 4)}-${value.slice(4)}`;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function validRequestId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
+}
+
+function validVerifier(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
 function defaultDisplayName(email: string): string {
@@ -433,7 +456,7 @@ async function passwordLogin(request: Request, env: Env): Promise<Response> {
   const body = await requestJson(request);
   const email = normalizedEmail(body?.email);
   const password = body?.password;
-  if (!email || typeof password !== "string" || password.length > 2048) return fail(401, "INVALID_CREDENTIALS");
+  if (!email || !acceptablePassword(password)) return fail(401, "INVALID_CREDENTIALS");
 
   const now = Date.now();
   if (!(await rateLimitPair(env, request, email, "password-login", now, 40, 8))) return fail(429, "RATE_LIMITED");
@@ -774,8 +797,27 @@ async function completePasswordReset(request: Request, env: Env): Promise<Respon
   return json({ passwordChanged: true });
 }
 
-function withResetPageCors(request: Request, env: Env, response: Response): Response {
-  if (new URL(request.url).pathname !== "/v1/auth/password/complete-reset") return response;
+function accountPageCorsMethods(pathname: string): string | null {
+  const postPaths = new Set([
+    "/v1/auth/password/login",
+    "/v1/auth/password/verify-login-code",
+    "/v1/auth/password/request-enrollment-code",
+    "/v1/auth/password/verify-enrollment-code",
+    "/v1/auth/password/enroll",
+    "/v1/auth/password/request-reset",
+    "/v1/auth/password/complete-reset",
+    "/v1/me/password-reset",
+    "/v1/auth/logout",
+    "/v1/auth/browser/approve",
+  ]);
+  if (postPaths.has(pathname)) return "POST, OPTIONS";
+  if (pathname === "/v1/auth/browser/request") return "GET, OPTIONS";
+  return null;
+}
+
+function withAccountPageCors(request: Request, env: Env, response: Response): Response {
+  const allowedMethods = accountPageCorsMethods(new URL(request.url).pathname);
+  if (!allowedMethods) return response;
   const origin = request.headers.get("origin");
   if (!origin || !env.APP_BASE_URL) return response;
   let allowedOrigin = "";
@@ -789,8 +831,8 @@ function withResetPageCors(request: Request, env: Env, response: Response): Resp
   headers.set("access-control-allow-origin", origin);
   headers.set("vary", "Origin");
   if (request.method === "OPTIONS") {
-    headers.set("access-control-allow-methods", "POST, OPTIONS");
-    headers.set("access-control-allow-headers", "content-type");
+    headers.set("access-control-allow-methods", allowedMethods);
+    headers.set("access-control-allow-headers", "authorization, content-type");
     headers.set("access-control-max-age", "600");
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
@@ -840,6 +882,172 @@ async function createSession(env: Env, account: AccountRow, now: number): Promis
      VALUES (?, ?, ?, ?, ?, ?)`,
   ).bind(tokenHash, account.id, expiresAt, now, now, account.credential_version ?? 0).run();
   return { accessToken, expiresAt };
+}
+
+async function startBrowserAuth(request: Request, env: Env): Promise<Response> {
+  const body = await requestJson(request);
+  if (!/^[a-f0-9]{64}$/.test(String(body?.codeChallenge ?? ""))
+    || !["login", "register"].includes(String(body?.mode))
+    || !["ja", "en"].includes(String(body?.locale))) return fail(400, "INVALID_BROWSER_AUTH_REQUEST");
+  const now = Date.now();
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  const ipHash = await hmacHex(env.AUTH_CODE_PEPPER, ip);
+  await env.DB.prepare("DELETE FROM browser_auth_requests WHERE expires_at <= ?").bind(now).run();
+  await env.DB.prepare("DELETE FROM rate_limits WHERE window_started_at < ?").bind(now - 24 * 60 * 60 * 1000).run();
+  if (!(await enforceRateLimit(env, `browser-start:${ipHash}`, now, 60 * 60 * 1000, 20))) return fail(429, "RATE_LIMITED");
+
+  const requestId = randomHex(16);
+  const userCode = browserUserCode();
+  const codeHash = await hmacHex(env.AUTH_CODE_PEPPER, `browser-code\0${userCode}`);
+  const challengeHash = await hmacHex(env.AUTH_CODE_PEPPER, `browser-challenge\0${body!.codeChallenge as string}`);
+  const expiresAt = now + BROWSER_AUTH_TTL_MS;
+  await env.DB.prepare(
+    `INSERT INTO browser_auth_requests
+      (request_id, user_code, user_code_hash, code_challenge_hash, mode, locale, status, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+  ).bind(requestId, userCode, codeHash, challengeHash, body!.mode, body!.locale, expiresAt, now).run();
+  const browserUrl = new URL("/account.html", env.APP_BASE_URL);
+  browserUrl.searchParams.set("request", requestId);
+  browserUrl.searchParams.set("mode", String(body!.mode));
+  browserUrl.searchParams.set("lang", String(body!.locale));
+  return json({ requestId, userCode, browserUrl: browserUrl.toString(), expiresInSeconds: 600, intervalSeconds: 3 });
+}
+
+async function browserAuthRequest(request: Request, env: Env): Promise<Response> {
+  const requestId = new URL(request.url).searchParams.get("requestId");
+  if (!validRequestId(requestId)) return fail(400, "INVALID_BROWSER_AUTH_REQUEST");
+  const now = Date.now();
+  await env.DB.prepare("DELETE FROM browser_auth_requests WHERE expires_at <= ?").bind(now).run();
+  const row = await env.DB.prepare(
+    "SELECT user_code, expires_at, status FROM browser_auth_requests WHERE request_id = ? AND expires_at > ?",
+  ).bind(requestId, now).first<{ user_code: string; expires_at: number; status: string }>();
+  if (!row) return fail(410, "BROWSER_AUTH_EXPIRED");
+  return json({ userCode: row.user_code, expiresInSeconds: Math.max(0, Math.ceil((row.expires_at - now) / 1000)), status: row.status });
+}
+
+async function approveBrowserAuth(request: Request, env: Env): Promise<Response> {
+  const body = await requestJson(request);
+  if (!validRequestId(body?.requestId) || typeof body?.userCode !== "string"
+    || !/^[23456789A-HJ-NP-Z]{4}-[23456789A-HJ-NP-Z]{4}$/i.test(body.userCode.trim())) {
+    return fail(400, "INVALID_BROWSER_AUTH_REQUEST");
+  }
+  const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";
+  if (!/^[a-f0-9]{64}$/.test(token)) return fail(401, "SESSION_EXPIRED");
+  const now = Date.now();
+  const tokenHash = await hmacHex(env.SESSION_PEPPER, token);
+  const session = await env.DB.prepare(
+    `SELECT s.token_hash, s.created_at, s.credential_version AS session_credential_version, a.id, a.email,
+       a.firebase_uid, a.credential_version, a.display_name
+     FROM sessions s JOIN accounts a ON a.id = s.account_id
+     WHERE s.token_hash = ? AND s.expires_at > ?`,
+  ).bind(tokenHash, now).first<SessionRow & { created_at: number }>();
+  if (!session || session.credential_version !== session.session_credential_version
+    || !session.firebase_uid || session.created_at > now
+    || now - session.created_at > 10 * 60 * 1000) return fail(401, "RECENT_PASSWORD_LOGIN_REQUIRED");
+
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  const [ipHash, accountHash, codeHash] = await Promise.all([
+    hmacHex(env.AUTH_CODE_PEPPER, ip),
+    hmacHex(env.AUTH_CODE_PEPPER, session.id),
+    hmacHex(env.AUTH_CODE_PEPPER, `browser-code\0${body.userCode.trim().toUpperCase()}`),
+  ]);
+  await env.DB.prepare("DELETE FROM browser_auth_requests WHERE expires_at <= ?").bind(now).run();
+  if (!(await enforceRateLimit(env, `browser-approve-ip:${ipHash}`, now, 60 * 60 * 1000, 30))
+    || !(await enforceRateLimit(env, `browser-approve-account:${accountHash}`, now, 60 * 60 * 1000, 10))) return fail(429, "RATE_LIMITED");
+  const results = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE browser_auth_requests SET status = 'approved', account_id = ?, credential_version = ?, approved_at = ?
+       WHERE request_id = ? AND user_code_hash = ? AND status = 'pending' AND expires_at > ?
+         AND EXISTS (
+           SELECT 1 FROM sessions s JOIN accounts a ON a.id = s.account_id
+           WHERE s.token_hash = ? AND s.expires_at > ? AND s.created_at >= ? AND s.created_at <= ?
+             AND s.credential_version = a.credential_version AND a.firebase_uid IS NOT NULL
+             AND a.id = ? AND a.credential_version = ?
+         )`,
+    ).bind(session.id, session.credential_version, now, body.requestId, codeHash, now,
+      tokenHash, now, now - 10 * 60 * 1000, now, session.id, session.credential_version),
+    env.DB.prepare(
+      `DELETE FROM sessions WHERE token_hash = ? AND EXISTS (
+         SELECT 1 FROM browser_auth_requests
+         WHERE request_id = ? AND status = 'approved' AND account_id = ? AND credential_version = ? AND approved_at = ?
+       )`,
+    ).bind(tokenHash, body.requestId, session.id, session.credential_version, now),
+  ]);
+  if ((results[0]?.meta?.changes ?? 0) !== 1 || (results[1]?.meta?.changes ?? 0) !== 1) {
+    return fail(409, "BROWSER_AUTH_NOT_PENDING");
+  }
+  return json({ approved: true });
+}
+
+async function pollBrowserAuth(request: Request, env: Env): Promise<Response> {
+  const body = await requestJson(request);
+  if (!validRequestId(body?.requestId) || !validVerifier(body?.codeVerifier)) return fail(400, "INVALID_BROWSER_AUTH_PROOF");
+  const now = Date.now();
+  await env.DB.prepare("DELETE FROM browser_auth_requests WHERE expires_at <= ?").bind(now).run();
+  const challengeHash = await hmacHex(env.AUTH_CODE_PEPPER, `browser-challenge\0${await sha256Hex(body.codeVerifier)}`);
+  const row = await env.DB.prepare(
+    `SELECT request_id, code_challenge_hash, status, account_id, credential_version, expires_at
+     FROM browser_auth_requests WHERE request_id = ? AND expires_at > ?`,
+  ).bind(body.requestId, now).first<{ request_id: string; code_challenge_hash: string; status: string; account_id: string | null; credential_version: number | null; expires_at: number }>();
+  if (!row) return fail(410, "BROWSER_AUTH_EXPIRED");
+  if (!constantTimeEqual(row.code_challenge_hash, challengeHash)) return fail(401, "INVALID_BROWSER_AUTH_PROOF");
+  const pollSlot = await env.DB.prepare(
+    `UPDATE browser_auth_requests SET last_polled_at = ?
+     WHERE request_id = ? AND expires_at > ?
+       AND (last_polled_at IS NULL OR last_polled_at <= ?)
+     RETURNING request_id`,
+  ).bind(now, body.requestId, now, now - BROWSER_AUTH_POLL_INTERVAL_MS)
+    .first<{ request_id: string }>();
+  if (!pollSlot) return fail(429, "POLL_TOO_FREQUENT");
+  if (row.status === "pending") return json({ status: "pending" }, 202);
+  if (row.status !== "approved" || !row.account_id || row.credential_version === null) return fail(410, "BROWSER_AUTH_EXPIRED");
+
+  const account = await env.DB.prepare(
+    "SELECT id, email, firebase_uid, credential_version, display_name FROM accounts WHERE id = ? AND credential_version = ?",
+  ).bind(row.account_id, row.credential_version).first<AccountRow>();
+  if (!account || !account.firebase_uid) {
+    await env.DB.prepare("DELETE FROM browser_auth_requests WHERE request_id = ?").bind(row.request_id).run();
+    return fail(401, "CREDENTIALS_CHANGED");
+  }
+
+  const accessToken = randomHex(32);
+  const tokenHash = await hmacHex(env.SESSION_PEPPER, accessToken);
+  const expiresAt = now + SESSION_TTL_MS;
+  const result = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO sessions (token_hash, account_id, expires_at, created_at, last_used_at, credential_version)
+       SELECT ?, a.id, ?, ?, ?, a.credential_version FROM accounts a
+       JOIN browser_auth_requests r ON r.account_id = a.id
+       WHERE r.request_id = ? AND r.status = 'approved' AND r.expires_at > ?
+         AND r.credential_version = a.credential_version AND a.credential_version = ? AND a.firebase_uid IS NOT NULL`,
+    ).bind(tokenHash, expiresAt, now, now, row.request_id, now, row.credential_version),
+    env.DB.prepare(
+      `DELETE FROM browser_auth_requests WHERE request_id = ? AND status = 'approved' AND expires_at > ?
+       AND credential_version = ? AND EXISTS (
+         SELECT 1 FROM accounts a WHERE a.id = browser_auth_requests.account_id
+           AND a.credential_version = ? AND a.firebase_uid IS NOT NULL
+       )`,
+    ).bind(row.request_id, now, row.credential_version, row.credential_version),
+  ]);
+  if ((result[0]?.meta?.changes ?? 0) !== 1 || (result[1]?.meta?.changes ?? 0) !== 1) return fail(409, "BROWSER_AUTH_ALREADY_CONSUMED");
+  return json({
+    status: "complete",
+    accessToken,
+    expiresAt,
+    account: { email: account.email, displayName: displayNameFor(account), hasPassword: true },
+  });
+}
+
+async function cancelBrowserAuth(request: Request, env: Env): Promise<Response> {
+  const body = await requestJson(request);
+  if (!validRequestId(body?.requestId) || !validVerifier(body?.codeVerifier)) return fail(400, "INVALID_BROWSER_AUTH_PROOF");
+  const challengeHash = await hmacHex(env.AUTH_CODE_PEPPER, `browser-challenge\0${await sha256Hex(body.codeVerifier)}`);
+  const now = Date.now();
+  await env.DB.prepare("DELETE FROM browser_auth_requests WHERE expires_at <= ?").bind(now).run();
+  const cancelled = await env.DB.prepare(
+    "DELETE FROM browser_auth_requests WHERE request_id = ? AND code_challenge_hash = ? AND expires_at > ? RETURNING request_id",
+  ).bind(body.requestId, challengeHash, now).first<{ request_id: string }>();
+  return cancelled ? json({ cancelled: true }) : fail(401, "INVALID_BROWSER_AUTH_PROOF");
 }
 
 async function verifyCode(request: Request, env: Env): Promise<Response> {
@@ -1008,7 +1216,7 @@ export async function fetchHandler(request: Request, env: Env): Promise<Response
   let response: Response;
   try {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS" && url.pathname === "/v1/auth/password/complete-reset") {
+    if (request.method === "OPTIONS" && accountPageCorsMethods(url.pathname)) {
       response = new Response(null, { status: 204 });
     } else if (url.pathname === "/health" && request.method === "GET") {
       response = json({ ok: true });
@@ -1030,6 +1238,16 @@ export async function fetchHandler(request: Request, env: Env): Promise<Response
       response = await requestPasswordReset(request, env);
     } else if (request.method === "POST" && url.pathname === "/v1/auth/password/complete-reset") {
       response = await completePasswordReset(request, env);
+    } else if (request.method === "POST" && url.pathname === "/v1/auth/browser/start") {
+      response = await startBrowserAuth(request, env);
+    } else if (request.method === "GET" && url.pathname === "/v1/auth/browser/request") {
+      response = await browserAuthRequest(request, env);
+    } else if (request.method === "POST" && url.pathname === "/v1/auth/browser/approve") {
+      response = await approveBrowserAuth(request, env);
+    } else if (request.method === "POST" && url.pathname === "/v1/auth/browser/poll") {
+      response = await pollBrowserAuth(request, env);
+    } else if (request.method === "POST" && url.pathname === "/v1/auth/browser/cancel") {
+      response = await cancelBrowserAuth(request, env);
     } else if (request.method === "POST" && url.pathname === "/v1/me/password-reset") {
       response = await requestPasswordChange(request, env);
     } else if (request.method === "POST" && url.pathname === "/v1/auth/logout") {
@@ -1050,7 +1268,7 @@ export async function fetchHandler(request: Request, env: Env): Promise<Response
   } catch {
     response = fail(500, "SERVICE_UNAVAILABLE");
   }
-  return withResetPageCors(request, env, response);
+  return withAccountPageCors(request, env, response);
 }
 
 export default { fetch: fetchHandler };

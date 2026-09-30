@@ -17,8 +17,25 @@ type FakeAccount = {
 type FakeSession = {
   accountId: string;
   expiresAt: number;
+  createdAt: number;
   lastUsedAt: number;
   credentialVersion: number;
+};
+
+type FakeBrowserAuthRequest = {
+  requestId: string;
+  userCode: string;
+  userCodeHash: string;
+  codeChallengeHash: string;
+  mode: "login" | "register";
+  locale: "ja" | "en";
+  status: "pending" | "approved";
+  accountId: string | null;
+  credentialVersion: number | null;
+  expiresAt: number;
+  createdAt: number;
+  approvedAt: number | null;
+  lastPolledAt: number | null;
 };
 
 type FakeLoginChallenge = {
@@ -36,6 +53,7 @@ class FakeAccountDatabase {
   readonly emailCodes = new Map<string, { codeHash: string; expiresAt: number; attempts: number }>();
   readonly accounts = new Map<string, FakeAccount>();
   readonly sessions = new Map<string, FakeSession>();
+  readonly browserAuthRequests = new Map<string, FakeBrowserAuthRequest>();
   readonly loginChallenges = new Map<string, FakeLoginChallenge>();
   readonly enrollmentCodes = new Map<string, { codeHash: string; expiresAt: number; attempts: number }>();
   readonly setupProofs = new Map<string, { email: string; expiresAt: number; processingUntil: number | null }>();
@@ -51,8 +69,16 @@ class FakeAccountDatabase {
       },
       first: async <T>() => this.first<T>(sql, values),
       run: async () => this.run(sql, values),
+      get sql() { return sql; },
+      get values() { return values; },
     };
     return statement;
+  }
+
+  async batch(statements: Array<{ run: () => Promise<{ success: boolean; meta?: Record<string, unknown> }> }>) {
+    const results = [];
+    for (const statement of statements) results.push(await statement.run());
+    return results;
   }
 
   private async first<T>(sql: string, values: unknown[]): Promise<T | null> {
@@ -66,6 +92,36 @@ class FakeAccountDatabase {
         : { windowStartedAt: now, requestCount: 1 };
       this.rateLimits.set(bucket, next);
       return { request_count: next.requestCount } as T;
+    }
+    if (sql.includes("SELECT user_code, expires_at, status FROM browser_auth_requests")) {
+      const row = this.browserAuthRequests.get(String(values[0]));
+      if (!row || row.expiresAt <= Number(values[1])) return null;
+      return { user_code: row.userCode, expires_at: row.expiresAt, status: row.status } as T;
+    }
+    if (sql.includes("SELECT request_id, code_challenge_hash, status, account_id, credential_version, expires_at")) {
+      const row = this.browserAuthRequests.get(String(values[0]));
+      if (!row || row.expiresAt <= Number(values[1])) return null;
+      return {
+        request_id: row.requestId,
+        code_challenge_hash: row.codeChallengeHash,
+        status: row.status,
+        account_id: row.accountId,
+        credential_version: row.credentialVersion,
+        expires_at: row.expiresAt,
+      } as T;
+    }
+    if (sql.includes("UPDATE browser_auth_requests SET last_polled_at = ?")) {
+      const row = this.browserAuthRequests.get(String(values[1]));
+      if (!row || row.expiresAt <= Number(values[2])
+        || (row.lastPolledAt !== null && row.lastPolledAt > Number(values[3]))) return null;
+      row.lastPolledAt = Number(values[0]);
+      return { request_id: row.requestId } as T;
+    }
+    if (sql.includes("DELETE FROM browser_auth_requests") && sql.includes("code_challenge_hash = ?") && sql.includes("RETURNING request_id")) {
+      const row = this.browserAuthRequests.get(String(values[0]));
+      if (!row || row.codeChallengeHash !== values[1] || row.expiresAt <= Number(values[2])) return null;
+      this.browserAuthRequests.delete(row.requestId);
+      return { request_id: row.requestId } as T;
     }
     if (sql.includes("UPDATE email_codes SET attempts = attempts + 1")) {
       const email = String(values[0]);
@@ -172,6 +228,7 @@ class FakeAccountDatabase {
       const account = [...this.accounts.values()].find((entry) => entry.id === session.accountId);
       return account ? {
         token_hash: tokenHash,
+        created_at: session.createdAt,
         session_credential_version: session.credentialVersion,
         id: account.id,
         email: account.email,
@@ -184,6 +241,7 @@ class FakeAccountDatabase {
   }
 
   private async run(sql: string, values: unknown[]) {
+    let changes = 1;
     if (sql.includes("INSERT INTO email_codes")) {
       this.emailCodes.set(String(values[0]), { codeHash: String(values[1]), expiresAt: Number(values[2]), attempts: 0 });
     } else if (sql.includes("INSERT INTO login_challenges")) {
@@ -203,6 +261,23 @@ class FakeAccountDatabase {
       this.enrollmentCodes.set(String(values[0]), { codeHash: String(values[1]), expiresAt: Number(values[2]), attempts: 0 });
     } else if (sql.includes("INSERT INTO password_setup_proofs")) {
       this.setupProofs.set(String(values[0]), { email: String(values[1]), expiresAt: Number(values[2]), processingUntil: null });
+    } else if (sql.includes("INSERT INTO browser_auth_requests")) {
+      const [requestId, userCode, userCodeHash, codeChallengeHash, mode, locale, expiresAt, createdAt] = values;
+      this.browserAuthRequests.set(String(requestId), {
+        requestId: String(requestId),
+        userCode: String(userCode),
+        userCodeHash: String(userCodeHash),
+        codeChallengeHash: String(codeChallengeHash),
+        mode: mode as "login" | "register",
+        locale: locale as "ja" | "en",
+        status: "pending",
+        accountId: null,
+        credentialVersion: null,
+        expiresAt: Number(expiresAt),
+        createdAt: Number(createdAt),
+        approvedAt: null,
+        lastPolledAt: null,
+      });
     } else if (sql.includes("INSERT INTO accounts")) {
       const id = String(values[0]);
       const email = String(values[1]);
@@ -251,13 +326,77 @@ class FakeAccountDatabase {
         row.avatarMime = String(values[1]);
         row.avatarUpdatedAt = Number(values[2]);
       }
+    } else if (sql.includes("UPDATE browser_auth_requests SET status = 'approved'")) {
+      const [accountId, credentialVersion, approvedAt, requestId, userCodeHash, requestNow,
+        tokenHash, sessionNow, sessionMinCreatedAt, sessionMaxCreatedAt, expectedAccountId, expectedVersion] = values;
+      const request = this.browserAuthRequests.get(String(requestId));
+      const session = this.sessions.get(String(tokenHash));
+      const account = [...this.accounts.values()].find((entry) => entry.id === session?.accountId);
+      const valid = request?.status === "pending" && request.userCodeHash === userCodeHash
+        && request.expiresAt > Number(requestNow) && account !== undefined && account.id === expectedAccountId
+        && account.id === accountId && account.credential_version === Number(expectedVersion)
+        && account.credential_version === session?.credentialVersion && account.firebase_uid !== null
+        && session.expiresAt > Number(sessionNow)
+        && session.createdAt >= Number(sessionMinCreatedAt) && session.createdAt <= Number(sessionMaxCreatedAt);
+      if (request && valid) {
+        request.status = "approved";
+        request.accountId = String(accountId);
+        request.credentialVersion = Number(credentialVersion);
+        request.approvedAt = Number(approvedAt);
+      } else {
+        changes = 0;
+      }
+    } else if (sql.includes("DELETE FROM sessions WHERE token_hash = ? AND EXISTS")) {
+      const [tokenHash, requestId, accountId, credentialVersion, approvedAt] = values;
+      const request = this.browserAuthRequests.get(String(requestId));
+      if (request?.status === "approved" && request.accountId === accountId
+        && request.credentialVersion === Number(credentialVersion) && request.approvedAt === Number(approvedAt)) {
+        this.sessions.delete(String(tokenHash));
+      } else {
+        changes = 0;
+      }
+    } else if (sql.includes("INSERT INTO sessions") && sql.includes("SELECT ?, a.id")) {
+      const [tokenHash, expiresAt, createdAt, lastUsedAt, requestId, requestNow, credentialVersion] = values;
+      const request = this.browserAuthRequests.get(String(requestId));
+      const account = [...this.accounts.values()].find((entry) => entry.id === request?.accountId);
+      if (request?.status === "approved" && request.expiresAt > Number(requestNow)
+        && account && request.credentialVersion === account.credential_version
+        && account.credential_version === Number(credentialVersion) && account.firebase_uid !== null) {
+        this.sessions.set(String(tokenHash), {
+          accountId: account.id,
+          expiresAt: Number(expiresAt),
+          createdAt: Number(createdAt),
+          lastUsedAt: Number(lastUsedAt),
+          credentialVersion: account.credential_version,
+        });
+      } else {
+        changes = 0;
+      }
+    } else if (sql.includes("DELETE FROM browser_auth_requests WHERE request_id = ? AND status = 'approved'")) {
+      const [requestId, now, credentialVersion, requiredVersion] = values;
+      const request = this.browserAuthRequests.get(String(requestId));
+      const account = [...this.accounts.values()].find((entry) => entry.id === request?.accountId);
+      if (request?.status === "approved" && request.expiresAt > Number(now)
+        && request.credentialVersion === Number(credentialVersion)
+        && account?.credential_version === Number(requiredVersion) && account.firebase_uid !== null) {
+        this.browserAuthRequests.delete(String(requestId));
+      } else {
+        changes = 0;
+      }
+    } else if (sql.includes("DELETE FROM browser_auth_requests WHERE request_id = ?")) {
+      changes = this.browserAuthRequests.delete(String(values[0])) ? 1 : 0;
     } else if (sql.includes("INSERT INTO sessions")) {
       this.sessions.set(String(values[0]), {
         accountId: String(values[1]),
         expiresAt: Number(values[2]),
+        createdAt: Number(values[3]),
         lastUsedAt: Number(values[4]),
         credentialVersion: Number(values[5]),
       });
+    } else if (sql.includes("DELETE FROM browser_auth_requests WHERE expires_at")) {
+      for (const [requestId, row] of this.browserAuthRequests) {
+        if (row.expiresAt <= Number(values[0])) this.browserAuthRequests.delete(requestId);
+      }
     } else if (sql.includes("DELETE FROM sessions WHERE expires_at")) {
       for (const [token, session] of this.sessions) if (session.expiresAt <= Number(values[0])) this.sessions.delete(token);
     } else if (sql.includes("UPDATE sessions SET last_used_at")) {
@@ -301,7 +440,7 @@ class FakeAccountDatabase {
     } else if (sql.includes("DELETE FROM rate_limits WHERE window_started_at")) {
       for (const [bucket, row] of this.rateLimits) if (row.windowStartedAt < Number(values[0])) this.rateLimits.delete(bucket);
     }
-    return { success: true, meta: { changes: 1 } };
+    return { success: true, meta: { changes } };
   }
 }
 
@@ -328,14 +467,20 @@ function post(path: string, body: unknown, ip = "192.0.2.9", origin?: string): R
   });
 }
 
-function authenticated(path: string, method: string, token: string, body?: unknown): Request {
+function authenticated(path: string, method: string, token: string, body?: unknown, origin?: string): Request {
   const headers = new Headers({ authorization: `Bearer ${token}` });
   if (body !== undefined) headers.set("content-type", "application/json");
+  if (origin) headers.set("origin", origin);
   return new Request(`https://account-api.tomonode.site${path}`, {
     method,
     headers,
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
+}
+
+async function sha256HexForTest(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function firebaseResponse(data: unknown, status = 200): Response {
@@ -364,6 +509,7 @@ async function seedSignedInAccount(database: FakeAccountDatabase, env: Env, emai
   database.sessions.set(tokenHash, {
     accountId: account.id,
     expiresAt: Date.now() + 60_000,
+    createdAt: Date.now(),
     lastUsedAt: Date.now(),
     credentialVersion: 0,
   });
@@ -447,9 +593,11 @@ describe("TomoNode account API routes", () => {
       credential_version: 0,
     });
     const originalFetch = globalThis.fetch;
+    let firebaseCalls = 0;
     let resendCount = 0;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).startsWith("https://identitytoolkit.googleapis.com/")) {
+        firebaseCalls += 1;
         return firebaseResponse({ error: { message: "INVALID_LOGIN_CREDENTIALS" } }, 400);
       }
       resendCount += 1;
@@ -463,11 +611,17 @@ describe("TomoNode account API routes", () => {
       const noPasswordAccount = await fetchHandler(post("/v1/auth/password/login", {
         email: "new@example.com", password: "a sufficiently long wrong password",
       }, "192.0.2.10"), env);
+      const tooShortPassword = await fetchHandler(post("/v1/auth/password/login", {
+        email: "short@example.com", password: "abcde",
+      }, "192.0.2.11"), env);
       expect(wrongPassword.status).toBe(401);
       expect(noPasswordAccount.status).toBe(401);
+      expect(tooShortPassword.status).toBe(401);
       await expect(wrongPassword.json()).resolves.toEqual({ error: "INVALID_CREDENTIALS" });
       await expect(noPasswordAccount.json()).resolves.toEqual({ error: "INVALID_CREDENTIALS" });
+      await expect(tooShortPassword.json()).resolves.toEqual({ error: "INVALID_CREDENTIALS" });
       expect(resendCount).toBe(0);
+      expect(firebaseCalls).toBe(2);
       expect(database.loginChallenges.size).toBe(0);
     } finally {
       globalThis.fetch = originalFetch;
@@ -585,6 +739,8 @@ describe("TomoNode account API routes", () => {
   it("uses a purpose-bound, single-use email proof for initial password enrollment without signing in", async () => {
     const { env, database } = makeEnv();
     const originalFetch = globalThis.fetch;
+    const minimumPassword = "🔒".repeat(6);
+    const maximumPassword = "🔒".repeat(128);
     let deliveredCode = "";
     let signupCalls = 0;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -592,11 +748,12 @@ describe("TomoNode account API routes", () => {
       if (target.startsWith("https://identitytoolkit.googleapis.com/")) {
         signupCalls += 1;
         expect(target).toContain("accounts:signUp");
-        const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        expect(payload).toEqual({ email: "first@example.com", password: "an initial secure passphrase", returnSecureToken: true });
+        const payload = JSON.parse(String(init?.body)) as { email: string; password: string; returnSecureToken: boolean };
+        expect(payload.returnSecureToken).toBe(true);
+        expect(payload.password).toBe(payload.email === "first@example.com" ? minimumPassword : maximumPassword);
         return firebaseResponse({
-          localId: "firebase-first-user",
-          email: "first@example.com",
+          localId: `firebase-${payload.email}`,
+          email: payload.email,
           idToken: "provider-id-token-must-not-leak",
           refreshToken: "provider-refresh-token-must-not-leak",
         });
@@ -619,13 +776,23 @@ describe("TomoNode account API routes", () => {
       expect(setupToken).toMatch(/^[a-f0-9]{64}$/);
       expect(database.sessions.size).toBe(0);
 
+      const tooShort = await fetchHandler(post("/v1/auth/password/enroll", {
+        email: "first@example.com", setupToken, password: "🔒".repeat(5),
+      }), env);
+      expect(tooShort.status).toBe(400);
+      const tooLong = await fetchHandler(post("/v1/auth/password/enroll", {
+        email: "first@example.com", setupToken, password: "🔒".repeat(129),
+      }), env);
+      expect(tooLong.status).toBe(400);
+      expect(signupCalls).toBe(0);
+
       const enrolled = await fetchHandler(post("/v1/auth/password/enroll", {
-        email: "first@example.com", setupToken, password: "an initial secure passphrase",
+        email: "first@example.com", setupToken, password: minimumPassword,
       }), env);
       expect(enrolled.status).toBe(200);
       const enrollmentResponse = await enrolled.json();
       expect(enrollmentResponse).toEqual({ passwordSet: true });
-      expect(database.accounts.get("first@example.com")?.firebase_uid).toBe("firebase-first-user");
+      expect(database.accounts.get("first@example.com")?.firebase_uid).toBe("firebase-first@example.com");
       expect(database.sessions.size).toBe(0);
       expect(JSON.stringify(enrollmentResponse)).not.toContain("provider-id-token");
 
@@ -634,6 +801,22 @@ describe("TomoNode account API routes", () => {
       }), env);
       expect(replay.status).toBe(400);
       expect(signupCalls).toBe(1);
+
+      const maxRequested = await fetchHandler(post("/v1/auth/password/request-enrollment-code", {
+        email: "maximum@example.com",
+      }), env);
+      expect(maxRequested.status).toBe(202);
+      const maxProof = await fetchHandler(post("/v1/auth/password/verify-enrollment-code", {
+        email: "maximum@example.com", code: deliveredCode,
+      }), env);
+      expect(maxProof.status).toBe(200);
+      const { setupToken: maximumSetupToken } = await maxProof.json() as { setupToken: string };
+      const maxEnrolled = await fetchHandler(post("/v1/auth/password/enroll", {
+        email: "maximum@example.com", setupToken: maximumSetupToken, password: maximumPassword,
+      }), env);
+      expect(maxEnrolled.status).toBe(200);
+      expect(database.accounts.get("maximum@example.com")?.firebase_uid).toBe("firebase-maximum@example.com");
+      expect(signupCalls).toBe(2);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -731,6 +914,7 @@ describe("TomoNode account API routes", () => {
     database.sessions.set("session-hash", {
       accountId: "owner-account",
       expiresAt: Date.now() + 60_000,
+      createdAt: Date.now(),
       lastUsedAt: Date.now(),
       credentialVersion: 0,
     });
@@ -770,6 +954,13 @@ describe("TomoNode account API routes", () => {
       await expect(existing.json()).resolves.toEqual({ requested: true });
       await expect(missing.json()).resolves.toEqual({ requested: true });
 
+      const invalidPassword = await fetchHandler(post("/v1/auth/password/complete-reset", {
+        oobCode: "firebase-action-code-1234567890",
+        newPassword: "abcde",
+      }), env);
+      expect(invalidPassword.status).toBe(400);
+      expect(resetCalls).toBe(0);
+
       const completed = await fetchHandler(post("/v1/auth/password/complete-reset", {
         oobCode: "firebase-action-code-1234567890",
         newPassword: "a replacement secure passphrase",
@@ -795,6 +986,7 @@ describe("TomoNode account API routes", () => {
     database.sessions.set("session-hash", {
       accountId: "owner-account",
       expiresAt: Date.now() + 60_000,
+      createdAt: Date.now(),
       lastUsedAt: Date.now(),
       credentialVersion: 0,
     });
@@ -823,29 +1015,237 @@ describe("TomoNode account API routes", () => {
     }
   });
 
-  it("allows reset-page CORS only from the configured TomoNode origin", async () => {
+  it("allows account-page CORS only from the configured TomoNode origin and scoped routes", async () => {
     const { env } = makeEnv();
-    const allowed = await fetchHandler(new Request("https://account-api.tomonode.site/v1/auth/password/complete-reset", {
-      method: "OPTIONS",
-      headers: {
-        origin: "https://tomonode.site",
-        "access-control-request-method": "POST",
-        "access-control-request-headers": "content-type",
-      },
-    }), env);
-    expect(allowed.status).toBe(204);
-    expect(allowed.headers.get("access-control-allow-origin")).toBe("https://tomonode.site");
+    for (const [path, method] of [
+      ["/v1/auth/password/login", "POST"],
+      ["/v1/auth/password/complete-reset", "POST"],
+      ["/v1/auth/logout", "POST"],
+      ["/v1/auth/browser/request", "GET"],
+      ["/v1/auth/browser/approve", "POST"],
+    ]) {
+      const allowed = await fetchHandler(new Request(`https://account-api.tomonode.site${path}`, {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://tomonode.site",
+          "access-control-request-method": method,
+          "access-control-request-headers": "authorization,content-type",
+        },
+      }), env);
+      expect(allowed.status).toBe(204);
+      expect(allowed.headers.get("access-control-allow-origin")).toBe("https://tomonode.site");
+      expect(allowed.headers.get("access-control-allow-methods")).toContain(method);
+    }
 
-    const rejected = await fetchHandler(new Request("https://account-api.tomonode.site/v1/auth/password/complete-reset", {
+    const rejected = await fetchHandler(new Request("https://account-api.tomonode.site/v1/auth/browser/approve", {
       method: "OPTIONS",
       headers: { origin: "https://attacker.example" },
     }), env);
     expect(rejected.headers.get("access-control-allow-origin")).toBeNull();
 
+    const nativeRoute = await fetchHandler(new Request("https://account-api.tomonode.site/v1/auth/browser/start", {
+      method: "OPTIONS",
+      headers: { origin: "https://tomonode.site" },
+    }), env);
+    expect(nativeRoute.headers.get("access-control-allow-origin")).toBeNull();
+
     const unrelated = await fetchHandler(new Request("https://account-api.tomonode.site/health", {
       headers: { origin: "https://tomonode.site" },
     }), env);
     expect(unrelated.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  it("completes browser authorization with a recent approval, matching proof, and one-time polling", async () => {
+    const { env, database } = makeEnv();
+    const approvalToken = await seedSignedInAccount(database, env);
+    const verifier = "b".repeat(64);
+    const codeChallenge = await sha256HexForTest(verifier);
+    const started = await fetchHandler(post("/v1/auth/browser/start", {
+      codeChallenge,
+      mode: "login",
+      locale: "ja",
+    }), env);
+    expect(started.status).toBe(200);
+    const startData = await started.json() as {
+      requestId: string;
+      userCode: string;
+      browserUrl: string;
+      expiresInSeconds: number;
+      intervalSeconds: number;
+    };
+    expect(startData.requestId).toMatch(/^[a-f0-9]{32}$/);
+    expect(startData.userCode).toMatch(/^[23456789A-HJ-NP-Z]{4}-[23456789A-HJ-NP-Z]{4}$/);
+    expect(startData.expiresInSeconds).toBe(600);
+    expect(startData.intervalSeconds).toBe(3);
+    const browserUrl = new URL(startData.browserUrl);
+    expect(browserUrl.origin).toBe("https://tomonode.site");
+    expect(browserUrl.pathname).toBe("/account.html");
+    expect(browserUrl.searchParams.get("request")).toBe(startData.requestId);
+    expect(browserUrl.searchParams.get("mode")).toBe("login");
+    expect(browserUrl.searchParams.get("lang")).toBe("ja");
+
+    const stored = database.browserAuthRequests.get(startData.requestId)!;
+    expect(stored.userCode).toBe(startData.userCode);
+    expect(stored.userCodeHash).not.toBe(startData.userCode);
+    expect(JSON.stringify(stored)).not.toContain(verifier);
+
+    const requestInfo = await fetchHandler(new Request(`https://account-api.tomonode.site/v1/auth/browser/request?requestId=${startData.requestId}`, {
+      headers: { origin: "https://tomonode.site" },
+    }), env);
+    expect(requestInfo.status).toBe(200);
+    expect(requestInfo.headers.get("access-control-allow-origin")).toBe("https://tomonode.site");
+    await expect(requestInfo.json()).resolves.toEqual({
+      userCode: startData.userCode,
+      expiresInSeconds: 600,
+      status: "pending",
+    });
+
+    const pending = await fetchHandler(post("/v1/auth/browser/poll", {
+      requestId: startData.requestId, codeVerifier: verifier,
+    }), env);
+    expect(pending.status).toBe(202);
+    await expect(pending.json()).resolves.toEqual({ status: "pending" });
+    const tooFrequent = await fetchHandler(post("/v1/auth/browser/poll", {
+      requestId: startData.requestId, codeVerifier: verifier,
+    }), env);
+    expect(tooFrequent.status).toBe(429);
+    const wrongProof = await fetchHandler(post("/v1/auth/browser/poll", {
+      requestId: startData.requestId, codeVerifier: "c".repeat(64),
+    }), env);
+    expect(wrongProof.status).toBe(401);
+
+    const approval = await fetchHandler(authenticated("/v1/auth/browser/approve", "POST", approvalToken, {
+      requestId: startData.requestId,
+      userCode: startData.userCode.toLowerCase(),
+    }, "https://tomonode.site"), env);
+    expect(approval.status).toBe(200);
+    expect(approval.headers.get("access-control-allow-origin")).toBe("https://tomonode.site");
+    await expect(approval.json()).resolves.toEqual({ approved: true });
+    expect(database.sessions.size).toBe(0);
+
+    const approvedInfo = await fetchHandler(new Request(`https://account-api.tomonode.site/v1/auth/browser/request?requestId=${startData.requestId}`, {
+      headers: { origin: "https://tomonode.site" },
+    }), env);
+    const approvedBody = await approvedInfo.json() as { userCode: string; expiresInSeconds: number; status: string; email?: string };
+    expect(approvedBody.userCode).toBe(startData.userCode);
+    expect(approvedBody.expiresInSeconds).toBeGreaterThan(0);
+    expect(approvedBody.status).toBe("approved");
+    expect(approvedBody.email).toBeUndefined();
+
+    stored.lastPolledAt = Date.now() - 3001;
+    const completed = await fetchHandler(post("/v1/auth/browser/poll", {
+      requestId: startData.requestId, codeVerifier: verifier,
+    }), env);
+    expect(completed.status).toBe(200);
+    const completion = await completed.json() as {
+      status: string;
+      accessToken: string;
+      expiresAt: number;
+      account: { email: string; displayName: string; hasPassword: boolean };
+    };
+    expect(completion).toEqual({
+      status: "complete",
+      accessToken: expect.stringMatching(/^[a-f0-9]{64}$/),
+      expiresAt: expect.any(Number),
+      account: { email: "owner@example.com", displayName: "owner", hasPassword: true },
+    });
+    expect(JSON.stringify(completion)).not.toContain(verifier);
+    expect(database.browserAuthRequests.has(startData.requestId)).toBe(false);
+    expect(database.sessions.size).toBe(1);
+
+    const replay = await fetchHandler(post("/v1/auth/browser/poll", {
+      requestId: startData.requestId, codeVerifier: verifier,
+    }), env);
+    expect(replay.status).toBe(410);
+
+    const cancelVerifier = "d".repeat(64);
+    const cancelledRequest = await fetchHandler(post("/v1/auth/browser/start", {
+      codeChallenge: await sha256HexForTest(cancelVerifier), mode: "register", locale: "en",
+    }), env);
+    const cancelData = await cancelledRequest.json() as { requestId: string };
+    const cancelled = await fetchHandler(post("/v1/auth/browser/cancel", {
+      requestId: cancelData.requestId, codeVerifier: cancelVerifier,
+    }), env);
+    expect(cancelled.status).toBe(200);
+    await expect(cancelled.json()).resolves.toEqual({ cancelled: true });
+    expect(database.browserAuthRequests.has(cancelData.requestId)).toBe(false);
+  });
+
+  it("rejects old approval sessions and expires browser authorization requests", async () => {
+    const { env, database } = makeEnv();
+    const approvalToken = await seedSignedInAccount(database, env);
+    const verifier = "e".repeat(64);
+    const started = await fetchHandler(post("/v1/auth/browser/start", {
+      codeChallenge: await sha256HexForTest(verifier), mode: "login", locale: "en",
+    }), env);
+    const startData = await started.json() as { requestId: string; userCode: string };
+    const session = [...database.sessions.values()][0]!;
+    session.createdAt = Date.now() - 600_001;
+    const staleApproval = await fetchHandler(authenticated("/v1/auth/browser/approve", "POST", approvalToken, {
+      requestId: startData.requestId, userCode: startData.userCode,
+    }), env);
+    expect(staleApproval.status).toBe(401);
+    expect(database.sessions.size).toBe(1);
+    expect(database.browserAuthRequests.get(startData.requestId)?.status).toBe("pending");
+
+    session.createdAt = Date.now();
+    const requestRow = database.browserAuthRequests.get(startData.requestId)!;
+    requestRow.expiresAt = Date.now() - 1;
+    const expiredInfo = await fetchHandler(new Request(`https://account-api.tomonode.site/v1/auth/browser/request?requestId=${startData.requestId}`), env);
+    expect(expiredInfo.status).toBe(410);
+    const expiredPoll = await fetchHandler(post("/v1/auth/browser/poll", {
+      requestId: startData.requestId, codeVerifier: verifier,
+    }), env);
+    expect(expiredPoll.status).toBe(410);
+    const expiredApproval = await fetchHandler(authenticated("/v1/auth/browser/approve", "POST", approvalToken, {
+      requestId: startData.requestId, userCode: startData.userCode,
+    }), env);
+    expect(expiredApproval.status).toBe(409);
+    expect(database.sessions.size).toBe(1);
+  });
+
+  it("does not allow a legacy email-code session to approve browser authorization", async () => {
+    const { env, database } = makeEnv();
+    const legacyToken = await seedSignedInAccount(database, env);
+    database.accounts.get("owner@example.com")!.firebase_uid = null;
+    const verifier = "9".repeat(64);
+    const started = await fetchHandler(post("/v1/auth/browser/start", {
+      codeChallenge: await sha256HexForTest(verifier), mode: "login", locale: "en",
+    }), env);
+    const startData = await started.json() as { requestId: string; userCode: string };
+
+    const approval = await fetchHandler(authenticated("/v1/auth/browser/approve", "POST", legacyToken, {
+      requestId: startData.requestId, userCode: startData.userCode,
+    }), env);
+    expect(approval.status).toBe(401);
+    await expect(approval.json()).resolves.toEqual({ error: "RECENT_PASSWORD_LOGIN_REQUIRED" });
+    expect(database.sessions.size).toBe(1);
+    expect(database.browserAuthRequests.get(startData.requestId)?.status).toBe("pending");
+  });
+
+  it("does not issue a browser session after approval credentials change", async () => {
+    const { env, database } = makeEnv();
+    const approvalToken = await seedSignedInAccount(database, env);
+    const verifier = "f".repeat(64);
+    const started = await fetchHandler(post("/v1/auth/browser/start", {
+      codeChallenge: await sha256HexForTest(verifier), mode: "login", locale: "ja",
+    }), env);
+    const startData = await started.json() as { requestId: string; userCode: string };
+    const approval = await fetchHandler(authenticated("/v1/auth/browser/approve", "POST", approvalToken, {
+      requestId: startData.requestId, userCode: startData.userCode,
+    }), env);
+    expect(approval.status).toBe(200);
+    database.accounts.get("owner@example.com")!.credential_version += 1;
+    const requestRow = database.browserAuthRequests.get(startData.requestId)!;
+    requestRow.lastPolledAt = Date.now() - 3001;
+
+    const staleGrant = await fetchHandler(post("/v1/auth/browser/poll", {
+      requestId: startData.requestId, codeVerifier: verifier,
+    }), env);
+    expect(staleGrant.status).toBe(401);
+    await expect(staleGrant.json()).resolves.toEqual({ error: "CREDENTIALS_CHANGED" });
+    expect(database.sessions.size).toBe(0);
+    expect(database.browserAuthRequests.has(startData.requestId)).toBe(false);
   });
 
   it("updates only the authenticated TomoNode display name with safe normalization", async () => {

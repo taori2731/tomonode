@@ -4,21 +4,29 @@ import { accountText } from "../lib/accountLocale";
 import { accountSettingsText } from "../lib/accountSettingsLocale";
 import { AvatarImageError, prepareAvatarUpload } from "../lib/avatarImage";
 import { backend } from "../lib/backend";
-import type { AccountPasswordSetup, AccountProfile } from "../lib/accountTypes";
+import type { AccountBrowserAuthMode, AccountBrowserAuthStart, AccountProfile } from "../lib/accountTypes";
+import { openExternalUrl } from "./ExternalLinkHandler";
 import { AccountSettingsPanel } from "./AccountSettingsPanel";
 import { Icon } from "./Icon";
 
-type AccountView = "checking" | "login" | "login-code" | "enroll-email" | "enroll-code" | "enroll-password" | "reset" | "profile" | "security" | "plan" | "settings";
+type AccountView = "checking" | "login" | "profile" | "security" | "plan" | "settings";
 
-const emailIsValid = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
-const passwordIsValid = (value: string) => {
-  const points = Array.from(value).length;
-  return points >= 15 && points <= 128 && new TextEncoder().encode(value).byteLength <= 512;
-};
 const displayNameIsValid = (value: string) => {
   const normalized = value.trim();
   return Array.from(normalized).length >= 1 && Array.from(normalized).length <= 32 && !/[\u0000-\u001f\u007f]/u.test(normalized);
 };
+
+interface BrowserAuthUiAttempt {
+  clientAttemptId: string;
+  start: AccountBrowserAuthStart | null;
+  expiresAt: number | null;
+}
+
+function newBrowserAuthAttemptId() {
+  const bytes = new Uint8Array(16);
+  window.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 interface Props {
   locale: AppLocale;
@@ -33,13 +41,10 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
   const settingsCopy = useMemo(() => accountSettingsText(locale), [locale]);
   const [view, setView] = useState<AccountView>(profileLoaded ? initialProfile ? "profile" : "login" : "checking");
   const [profile, setProfile] = useState<AccountProfile | null>(initialProfile);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [sentTo, setSentTo] = useState("");
-  const [code, setCode] = useState("");
-  const [challengeId, setChallengeId] = useState("");
-  const [setup, setSetup] = useState<AccountPasswordSetup | null>(null);
+  const [browserAttempt, setBrowserAttempt] = useState<BrowserAuthUiAttempt | null>(null);
+  const [browserPollPaused, setBrowserPollPaused] = useState(false);
+  const [browserSecondsLeft, setBrowserSecondsLeft] = useState(0);
+  const [browserPollRetry, setBrowserPollRetry] = useState(0);
   const [displayName, setDisplayName] = useState(initialProfile?.displayName ?? "");
   const [loading, setLoading] = useState(!profileLoaded && !initialProfile);
   const [busy, setBusy] = useState(false);
@@ -49,6 +54,9 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
   const dialogRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
   const previousInitialProfile = useRef(initialProfile);
+  const browserClientAttemptIdRef = useRef<string | null>(null);
+  const browserPollInFlightRef = useRef<string | null>(null);
+  const browserReturnViewRef = useRef<AccountView>("login");
 
   const publishProfile = useCallback((next: AccountProfile | null) => {
     setProfile(next);
@@ -57,6 +65,12 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
   }, [onProfileChange]);
 
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
+  useEffect(() => () => {
+    const clientAttemptId = browserClientAttemptIdRef.current;
+    browserClientAttemptIdRef.current = null;
+    if (clientAttemptId) void backend.accountBrowserAuthCancel(clientAttemptId).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const previous = previousInitialProfile.current;
@@ -119,121 +133,76 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
 
   useEffect(() => { dialogRef.current?.focus(); }, [view]);
 
-  const requestLogin = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const normalized = email.trim();
-    if (!emailIsValid(normalized)) { setError(copy.enterEmail); return; }
-    if (!passwordIsValid(password)) { setError(copy.passwordInvalid); return; }
+  const startBrowserAuth = async (mode: AccountBrowserAuthMode) => {
+    if (!backend.isDesktop || browserClientAttemptIdRef.current) return;
+    let clientAttemptId: string;
+    try {
+      clientAttemptId = newBrowserAuthAttemptId();
+    } catch {
+      setError(copy.browserAuthFailed);
+      return;
+    }
+    browserReturnViewRef.current = profile ? view === "security" ? "security" : "profile" : "login";
+    browserClientAttemptIdRef.current = clientAttemptId;
+    setBrowserAttempt({ clientAttemptId, start: null, expiresAt: null });
+    setBrowserPollPaused(false);
     setBusy(true);
     setError("");
     setNotice("");
+    setView("login");
     try {
-      const challenge = await backend.accountPasswordLogin(normalized, password);
-      setSentTo(normalized);
-      setChallengeId(challenge.challengeId);
-      setPassword("");
-      setCode("");
-      setNotice(`${copy.codeSent} ${normalized}`);
-      setView("login-code");
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
+      const start = await backend.accountBrowserAuthStart(clientAttemptId, mode, locale === "ja" ? "ja" : "en");
+      if (browserClientAttemptIdRef.current !== clientAttemptId) {
+        void backend.accountBrowserAuthCancel(clientAttemptId).catch(() => undefined);
+        return;
+      }
+      setBrowserAttempt({ clientAttemptId, start, expiresAt: Date.now() + start.expiresInSeconds * 1000 });
+      setBrowserSecondsLeft(start.expiresInSeconds);
       setBusy(false);
+      try {
+        await openExternalUrl(start.browserUrl);
+      } catch {
+        if (browserClientAttemptIdRef.current === clientAttemptId) setError(copy.browserAuthOpenFailed);
+      }
+    } catch {
+      if (browserClientAttemptIdRef.current === clientAttemptId) {
+        setBusy(false);
+        browserClientAttemptIdRef.current = null;
+        setBrowserAttempt(null);
+        setView(browserReturnViewRef.current);
+        setError(copy.browserAuthFailed);
+      }
+      void backend.accountBrowserAuthCancel(clientAttemptId).catch(() => undefined);
+    } finally {
+      if (browserClientAttemptIdRef.current === clientAttemptId) setBusy(false);
     }
   };
 
-  const verifyLoginCode = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!/^\d{6}$/.test(code)) { setError(copy.enterCode); return; }
-    setBusy(true);
+  const reopenBrowserAuth = async () => {
+    if (!browserAttempt?.start) return;
     setError("");
     try {
-      const signedIn = await backend.accountVerifyLoginCode(challengeId, code);
-      publishProfile(signedIn);
-      setCode("");
-      setChallengeId("");
-      setSentTo("");
-      setNotice("");
-      setView("profile");
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
+      await openExternalUrl(browserAttempt.start.browserUrl);
+    } catch {
+      setError(copy.browserAuthOpenFailed);
     }
   };
 
-  const requestEnrollmentCode = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const normalized = email.trim();
-    if (!emailIsValid(normalized)) { setError(copy.enterEmail); return; }
-    setBusy(true);
-    setError("");
-    setNotice("");
-    try {
-      await backend.accountRequestEnrollmentCode(normalized);
-      setEmail(normalized);
-      setSentTo(normalized);
-      setCode("");
-      setNotice(`${copy.enrollmentSent} ${normalized}`);
-      setView("enroll-code");
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const verifyEnrollmentCode = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!/^\d{6}$/.test(code)) { setError(copy.enterCode); return; }
-    setBusy(true);
-    setError("");
-    try {
-      setSetup(await backend.accountVerifyEnrollmentCode(sentTo, code));
-      setCode("");
-      setNotice("");
-      setView("enroll-password");
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const enrollPassword = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!setup) { setError(copy.enterCode); return; }
-    if (!passwordIsValid(password)) { setError(copy.passwordInvalid); return; }
-    if (password !== confirmPassword) { setError(copy.passwordMismatch); return; }
-    setBusy(true);
-    setError("");
-    try {
-      await backend.accountEnrollPassword(sentTo, setup.setupToken, password);
-      setPassword("");
-      setConfirmPassword("");
-      setSetup(null);
-      if (profile) publishProfile({ ...profile, hasPassword: true });
-      setNotice(copy.passwordEnrolled);
-      setView(profile ? "security" : "login");
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const requestPasswordReset = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const normalized = email.trim();
-    if (!emailIsValid(normalized)) { setError(copy.enterEmail); return; }
-    setBusy(true);
+  const cancelBrowserAuth = async () => {
+    const clientAttemptId = browserClientAttemptIdRef.current;
+    if (!clientAttemptId) return;
+    browserClientAttemptIdRef.current = null;
+    setBrowserAttempt(null);
+    setBrowserPollPaused(false);
+    setBrowserSecondsLeft(0);
+    setView(browserReturnViewRef.current);
     setError("");
     setNotice("");
+    setBusy(true);
     try {
-      await backend.accountRequestPasswordReset(normalized);
-      setNotice(copy.resetSent);
-    } catch (reason) {
-      setError(String(reason));
+      await backend.accountBrowserAuthCancel(clientAttemptId);
+    } catch {
+      setError(copy.browserAuthFailed);
     } finally {
       setBusy(false);
     }
@@ -253,23 +222,91 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
     }
   };
 
-  const requestCurrentPasswordSetup = async () => {
-    if (!profile) return;
-    setBusy(true);
+  useEffect(() => {
+    const attempt = browserAttempt;
+    if (!attempt?.start || browserPollPaused) return;
+    const { clientAttemptId, start } = attempt;
+    let stopped = false;
+    let timer: number | undefined;
+    const intervalMs = Math.max(1, start.intervalSeconds) * 1000;
+
+    const poll = async () => {
+      if (stopped || browserClientAttemptIdRef.current !== clientAttemptId) return;
+      if (browserPollInFlightRef.current === clientAttemptId) {
+        timer = window.setTimeout(() => void poll(), intervalMs);
+        return;
+      }
+      browserPollInFlightRef.current = clientAttemptId;
+      let continuePolling = true;
+      try {
+        const result = await backend.accountBrowserAuthPoll(start.requestId);
+        if (result.status === "complete" && result.account) {
+          continuePolling = false;
+          browserClientAttemptIdRef.current = null;
+          setBrowserAttempt(null);
+          setBrowserPollPaused(false);
+          setBrowserSecondsLeft(0);
+          setError("");
+          setNotice(copy.browserAuthSignedIn);
+          publishProfile(result.account);
+          setView("profile");
+        } else if (stopped || browserClientAttemptIdRef.current !== clientAttemptId) {
+          return;
+        } else if (result.status === "expired") {
+          continuePolling = false;
+          browserClientAttemptIdRef.current = null;
+          setBrowserAttempt(null);
+          setBrowserPollPaused(false);
+          setBrowserSecondsLeft(0);
+          setError(copy.browserAuthExpired);
+          setView(browserReturnViewRef.current);
+        }
+      } catch {
+        if (!stopped && browserClientAttemptIdRef.current === clientAttemptId) {
+          continuePolling = false;
+          setBrowserPollPaused(true);
+          setError(copy.browserAuthFailed);
+        }
+      } finally {
+        if (browserPollInFlightRef.current === clientAttemptId) browserPollInFlightRef.current = null;
+        if (continuePolling && !stopped && browserClientAttemptIdRef.current === clientAttemptId) {
+          timer = window.setTimeout(() => void poll(), intervalMs);
+        }
+      }
+    };
+
+    void poll();
+    return () => {
+      stopped = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [browserAttempt, browserPollPaused, browserPollRetry, copy, publishProfile]);
+
+  useEffect(() => {
+    const attempt = browserAttempt;
+    if (!attempt?.expiresAt) return;
+    const { clientAttemptId, expiresAt } = attempt;
+    const updateCountdown = () => {
+      const secondsLeft = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+      setBrowserSecondsLeft(secondsLeft);
+      if (secondsLeft === 0 && browserClientAttemptIdRef.current === clientAttemptId) {
+        browserClientAttemptIdRef.current = null;
+        setBrowserAttempt(null);
+        setBrowserPollPaused(false);
+        setError(copy.browserAuthExpired);
+        setView(browserReturnViewRef.current);
+        void backend.accountBrowserAuthCancel(clientAttemptId).catch(() => undefined);
+      }
+    };
+    updateCountdown();
+    const timer = window.setInterval(updateCountdown, 1000);
+    return () => window.clearInterval(timer);
+  }, [browserAttempt, copy.browserAuthExpired]);
+
+  const retryBrowserAuthPoll = () => {
     setError("");
-    setNotice("");
-    try {
-      await backend.accountRequestEnrollmentCode(profile.email);
-      setSentTo(profile.email);
-      setCode("");
-      setSetup(null);
-      setNotice(`${copy.enrollmentSent} ${profile.email}`);
-      setView("enroll-code");
-    } catch (reason) {
-      setError(String(reason));
-    } finally {
-      setBusy(false);
-    }
+    setBrowserPollPaused(false);
+    setBrowserPollRetry((retry) => retry + 1);
   };
 
   const updateDisplayName = async (event: FormEvent<HTMLFormElement>) => {
@@ -295,9 +332,6 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
     try {
       await backend.accountLogout();
       publishProfile(null);
-      setSentTo("");
-      setChallengeId("");
-      setCode("");
       setNotice(copy.loggedOut);
       setView("login");
     } catch (reason) {
@@ -344,10 +378,8 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
   };
 
   const title = view === "checking" ? copy.profileSettings
-    : view === "login" || view === "login-code" ? copy.title
-    : view === "enroll-email" || view === "enroll-code" || view === "enroll-password" ? copy.enroll
-      : view === "reset" ? copy.forgotPassword
-        : view === "security" ? copy.security : copy.accountSettings;
+    : view === "login" ? copy.title
+      : view === "security" ? copy.security : copy.accountSettings;
   const settingsOpen = Boolean(profile && (view === "profile" || view === "security" || view === "plan" || view === "settings"));
   const compact = view === "checking";
 
@@ -358,7 +390,7 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
           displayName={displayName} busy={busy} isDesktop={backend.isDesktop} notice={notice} error={error} avatarInput={avatarInput}
           onViewChange={(next) => { setView(next); setError(""); setNotice(""); }} onDisplayNameChange={setDisplayName}
           onSaveDisplayName={(event) => void updateDisplayName(event)} onUploadAvatar={(event) => void uploadAvatar(event)}
-          onRemoveAvatar={() => void removeAvatar()} onPasswordChange={() => void (profile.hasPassword ? requestCurrentPasswordReset() : requestCurrentPasswordSetup())}
+          onRemoveAvatar={() => void removeAvatar()} onPasswordChange={() => void (profile.hasPassword ? requestCurrentPasswordReset() : startBrowserAuth("register"))}
           onSignOut={() => void signOut()} onClose={onClose} />
           : view === "checking" ? <div className="account-profile-loading" role="status"><span className="spinner" /><strong>{copy.loading}</strong></div> : <>
           <header className="wizard-header account-dialog-header">
@@ -370,61 +402,24 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
             {!backend.isDesktop ? <p className="info-callout"><Icon name="info" size={18} />{copy.windowsOnly}</p> : null}
 
             {view === "login" ? <>
-              <p>{copy.intro}</p>
-              <form className="form-stack account-form" onSubmit={(event) => void requestLogin(event)}>
-                <label><span>{copy.email}</span><input type="email" autoComplete="email" required maxLength={254} value={email} onChange={(event) => setEmail(event.target.value)} disabled={busy} /></label>
-                <label><span>{copy.password}</span><input type="password" autoComplete="current-password" required maxLength={256} value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy} /></label>
-                <button className="primary-button" type="submit" disabled={busy || loading || !backend.isDesktop}><Icon name="user" size={18} />{busy ? copy.loading : copy.login}</button>
-              </form>
-              <p className="field-help">{copy.passwordHint}</p>
-              <div className="account-auth-links">
-                <button type="button" onClick={() => { setView("enroll-email"); setError(""); setNotice(""); }}>{copy.enroll}</button>
-                <button type="button" onClick={() => { setView("reset"); setError(""); setNotice(""); }}>{copy.forgotPassword}</button>
-              </div>
+              <p>{copy.browserAuthIntro}</p>
+              {browserAttempt ? <div className="form-stack account-form account-browser-auth">
+                {browserAttempt.start ? <>
+                  <p role="status">{browserPollPaused ? copy.browserAuthFailed : copy.browserAuthWaiting}</p>
+                  <div className="account-browser-auth-code">
+                    <span>{copy.browserAuthCode}</span>
+                    <output aria-label={copy.browserAuthCode}>{browserAttempt.start.userCode}</output>
+                  </div>
+                  <p className="field-help">{copy.browserAuthExpiresIn}: {Math.floor(browserSecondsLeft / 60)}:{String(browserSecondsLeft % 60).padStart(2, "0")}</p>
+                  <button className="secondary-button" type="button" onClick={() => void reopenBrowserAuth()}>{copy.browserAuthReopen}</button>
+                  {browserPollPaused ? <button className="primary-button" type="button" onClick={retryBrowserAuthPoll}>{copy.browserAuthRetry}</button> : null}
+                </> : <p role="status">{copy.browserAuthStarting}</p>}
+                <button className="secondary-button" type="button" onClick={() => void cancelBrowserAuth()}>{copy.browserAuthCancel}</button>
+              </div> : <div className="form-stack account-form">
+                <button className="primary-button" type="button" disabled={busy || loading || !backend.isDesktop} onClick={() => void startBrowserAuth("login")}><Icon name="user" size={18} />{busy ? copy.loading : copy.browserAuthLogin}</button>
+                <button className="secondary-button" type="button" disabled={busy || loading || !backend.isDesktop} onClick={() => void startBrowserAuth("register")}>{copy.browserAuthRegister}</button>
+              </div>}
               {notice ? <p className="compatibility good" role="status">{notice}</p> : null}
-            </> : null}
-
-            {view === "login-code" ? <form className="form-stack account-form" onSubmit={(event) => void verifyLoginCode(event)}>
-              <p role="status">{notice || `${copy.codeSent} ${sentTo}`}</p>
-              <label><span>{copy.code}</span><input type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} disabled={busy} /></label>
-              <button className="primary-button" type="submit" disabled={busy || !backend.isDesktop || code.length !== 6}>{busy ? copy.loading : copy.verifyCode}</button>
-              <button className="secondary-button" type="button" disabled={busy} onClick={() => { setView("login"); setCode(""); setChallengeId(""); setNotice(""); setError(""); }}>{copy.resend}</button>
-            </form> : null}
-
-            {view === "enroll-email" ? <>
-              <p>{copy.enrollmentSent}</p>
-              <form className="form-stack account-form" onSubmit={(event) => void requestEnrollmentCode(event)}>
-                <label><span>{copy.email}</span><input type="email" autoComplete="email" required maxLength={254} value={email} onChange={(event) => setEmail(event.target.value)} disabled={busy} /></label>
-                <button className="primary-button" type="submit" disabled={busy || loading || !backend.isDesktop}>{busy ? copy.loading : copy.sendCode}</button>
-              </form>
-              <button className="small-button" type="button" onClick={() => { setView("login"); setError(""); setNotice(""); }}>{copy.backToLogin}</button>
-            </> : null}
-
-            {view === "enroll-code" ? <form className="form-stack account-form" onSubmit={(event) => void verifyEnrollmentCode(event)}>
-              <p role="status">{notice || `${copy.enrollmentSent} ${sentTo}`}</p>
-              <label><span>{copy.code}</span><input type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} disabled={busy} /></label>
-              <button className="primary-button" type="submit" disabled={busy || !backend.isDesktop || code.length !== 6}>{busy ? copy.loading : copy.continue}</button>
-              <button className="secondary-button" type="button" disabled={busy} onClick={() => { setView("enroll-email"); setCode(""); setError(""); setNotice(""); }}>{copy.resend}</button>
-            </form> : null}
-
-            {view === "enroll-password" ? <>
-              <p>{copy.enrollmentSent} {sentTo}</p>
-              <form className="form-stack account-form" onSubmit={(event) => void enrollPassword(event)}>
-                <label><span>{copy.password}</span><input type="password" autoComplete="new-password" required maxLength={256} value={password} onChange={(event) => setPassword(event.target.value)} disabled={busy} /></label>
-                <label><span>{copy.confirmPassword}</span><input type="password" autoComplete="new-password" required maxLength={256} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} disabled={busy} /></label>
-                <small className="field-help">{copy.passwordHint}</small>
-                <button className="primary-button" type="submit" disabled={busy || !backend.isDesktop}>{busy ? copy.loading : copy.setPassword}</button>
-              </form>
-            </> : null}
-
-            {view === "reset" ? <>
-              <p>{copy.resetSent}</p>
-              <form className="form-stack account-form" onSubmit={(event) => void requestPasswordReset(event)}>
-                <label><span>{copy.email}</span><input type="email" autoComplete="email" required maxLength={254} value={email} onChange={(event) => setEmail(event.target.value)} disabled={busy} /></label>
-                <button className="primary-button" type="submit" disabled={busy || !backend.isDesktop}>{busy ? copy.loading : copy.requestReset}</button>
-              </form>
-              {notice ? <p className="compatibility good" role="status">{notice}</p> : null}
-              <button className="small-button" type="button" onClick={() => { setView("login"); setError(""); setNotice(""); }}>{copy.backToLogin}</button>
             </> : null}
 
             {error ? <p className="error-banner" role="alert"><Icon name="info" size={17} />{error}</p> : null}

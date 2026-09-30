@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex, nofollow, noarchive" />
+    <meta name="referrer" content="no-referrer" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src https://tomonode-account-api.rafaerunacaya27.workers.dev" />
+    <title>TomoNode アカウント</title>
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="stylesheet" href="/account.css" />
+    <script src="/account.js" defer></script>
+  </head>
+  <body>
+    <main class="page-shell">
+      <section class="account-card" aria-labelledby="page-title">
+        <div class="card-topline">
+          <a class="brand" href="/" aria-label="TomoNode ホーム">
+            <img src="/assets/tomonode-icon-bg-black.png" alt="" width="38" height="38" />
+            <span>TomoNode</span>
+          </a>
+          <label class="language-control">
+            <span class="visually-hidden" data-i18n="languageLabel">表示言語</span>
+            <select id="language-select" aria-label="表示言語">
+              <option value="ja">日本語</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+        </div>
+
+        <header class="page-heading">
+          <p class="eyebrow">ACCOUNT</p>
+          <h1 id="page-title">TomoNode にログイン</h1>
+          <p id="page-intro" class="intro">アカウント情報を入力してください。</p>
+        </header>
+
+        <section id="pairing-panel" class="pairing-panel" hidden aria-labelledby="pairing-title">
+          <p id="pairing-title" class="pairing-label" data-i18n="pairingTitle">デスクトップアプリとの接続</p>
+          <p class="pairing-copy" data-i18n="pairingCopy">アプリに表示されたコードと一致していることを確認してください。</p>
+          <output id="pairing-code" class="pairing-code" aria-label="デスクトップアプリの確認コード"></output>
+          <p id="pairing-expiry" class="pairing-expiry"></p>
+        </section>
+
+        <section id="login-view" class="view" aria-labelledby="page-title">
+          <form id="login-form" novalidate>
+            <div class="field">
+              <label for="login-email" data-i18n="emailLabel">メールアドレス</label>
+              <input id="login-email" name="email" type="email" autocomplete="email" autocapitalize="none" spellcheck="false" maxlength="254" required />
+            </div>
+            <div class="field">
+              <label for="login-password" data-i18n="passwordLabel">パスワード</label>
+              <div class="password-control">
+                <input id="login-password" name="password" type="password" autocomplete="current-password" minlength="6" maxlength="512" aria-describedby="login-password-requirements" required />
+                <button class="visibility-toggle" type="button" data-toggle-password="login-password" aria-controls="login-password" aria-label="パスワードを表示" aria-pressed="false">
+                  <svg class="eye-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.5 12s3.2-6 9.5-6 9.5 6 9.5 6-3.2 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.7"/><path class="eye-slash" d="M4 4l16 16"/></svg>
+                </button>
+              </div>
+              <p id="login-password-requirements" class="field-note" data-i18n="passwordHint">6〜128文字（UTF-8で512バイト以内）</p>
+              <p class="field-note"><a id="show-reset" class="text-link" href="#reset" data-i18n="forgotLink">パスワードを忘れた場合</a></p>
+            </div>
+            <button class="primary-button" type="submit" data-i18n="loginButton">ログイン</button>
+          </form>
+          <p class="mode-switch"><span data-i18n="noAccount">アカウントをお持ちでない場合</span> <button id="show-register" class="text-link" type="button" data-i18n="createAccount">新規登録</button></p>
+        </section>
+
+        <section id="login-code-view" class="view" aria-labelledby="page-title" hidden>
+          <form id="login-code-form" novalidate>
+            <p class="step-copy" data-i18n="loginCodeIntro">登録メールアドレスに届いた6桁の確認コードを入力してください。</p>
+            <div class="field">
+              <label for="login-code" data-i18n="codeLabel">確認コード</label>
+              <input id="login-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required />
+            </div>
+            <button class="primary-button" type="submit" data-i18n="verifyButton">確認して続行</button>
+          </form>
+          <button id="back-to-login" class="secondary-link" type="button" data-i18n="backToLogin">ログインに戻る</button>
+        </section>
+
+        <section id="register-view" class="view" aria-labelledby="page-title" hidden>
+          <form id="register-form" novalidate>
+            <div class="field">
+              <label for="register-email" data-i18n="emailLabel">メールアドレス</label>
+              <input id="register-email" name="email" type="email" autocomplete="email" autocapitalize="none" spellcheck="false" maxlength="254" required />
+            </div>
+            <div class="field">
+              <label for="register-password" data-i18n="passwordLabel">パスワード</label>
+              <div class="password-control">
+                <input id="register-password" name="password" type="password" autocomplete="new-password" minlength="6" maxlength="512" aria-describedby="password-requirements" required />
+                <button class="visibility-toggle" type="button" data-toggle-password="register-password" aria-controls="register-password" aria-label="パスワードを表示" aria-pressed="false">
+                  <svg class="eye-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.5 12s3.2-6 9.5-6 9.5 6 9.5 6-3.2 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.7"/><path class="eye-slash" d="M4 4l16 16"/></svg>
+                </button>
+              </div>
+              <p id="password-requirements" class="field-note" data-i18n="passwordHint">6〜128文字（UTF-8で512バイト以内）</p>
+            </div>
+            <div class="field">
+              <label for="register-confirm" data-i18n="confirmPasswordLabel">パスワード（確認）</label>
+              <div class="password-control">
+                <input id="register-confirm" name="confirmPassword" type="password" autocomplete="new-password" minlength="6" maxlength="512" required />
+                <button class="visibility-toggle" type="button" data-toggle-password="register-confirm" aria-controls="register-confirm" aria-label="パスワードを表示" aria-pressed="false">
+                  <svg class="eye-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.5 12s3.2-6 9.5-6 9.5 6 9.5 6-3.2 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.7"/><path class="eye-slash" d="M4 4l16 16"/></svg>
+                </button>
+              </div>
+            </div>
+            <button class="primary-button" type="submit" data-i18n="sendEnrollmentCodeButton">確認コードを送信</button>
+          </form>
+          <form id="register-code-form" novalidate hidden>
+            <p class="step-copy" data-i18n="enrollmentCodeIntro">メールに届いた6桁の確認コードを入力してください。</p>
+            <div class="field">
+              <label for="register-code" data-i18n="codeLabel">確認コード</label>
+              <input id="register-code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required />
+            </div>
+            <button class="primary-button" type="submit" data-i18n="finishEnrollmentButton">確認してアカウントを作成</button>
+          </form>
+          <p class="mode-switch"><span data-i18n="hasAccount">すでにアカウントをお持ちの場合</span> <button id="register-back-to-login" class="text-link" type="button" data-i18n="loginLink">ログイン</button></p>
+        </section>
+
+        <section id="reset-view" class="view" aria-labelledby="page-title" hidden>
+          <form id="reset-form" novalidate>
+            <p class="step-copy" data-i18n="resetIntro">登録したメールアドレスにパスワード再設定リンクを送信します。</p>
+            <div class="field">
+              <label for="reset-email" data-i18n="emailLabel">メールアドレス</label>
+              <input id="reset-email" name="email" type="email" autocomplete="email" autocapitalize="none" spellcheck="false" maxlength="254" required />
+            </div>
+            <button class="primary-button" type="submit" data-i18n="sendResetButton">再設定リンクを送信</button>
+          </form>
+          <button id="reset-back-to-login" class="secondary-link" type="button" data-i18n="backToLogin">ログインに戻る</button>
+        </section>
+
+        <section id="consent-view" class="view" aria-labelledby="page-title" hidden>
+          <div class="consent-details">
+            <p><span data-i18n="consentAccountLabel">ログイン中のアカウント</span><strong id="consent-email"></strong></p>
+            <p><span data-i18n="consentCodeLabel">接続するデスクトップアプリのコード</span><strong id="consent-user-code"></strong></p>
+          </div>
+          <p class="step-copy" data-i18n="consentIntro">このアカウントを使って、表示中のTomoNodeデスクトップアプリにログインします。</p>
+          <button id="approve-button" class="primary-button" type="button" data-i18n="approveButton">このアプリにログイン</button>
+          <button id="cancel-approval" class="secondary-link" type="button" data-i18n="cancelButton">キャンセルしてログアウト</button>
+        </section>
+
+        <section id="signed-in-view" class="view" aria-labelledby="page-title" hidden>
+          <div class="signed-in-details">
+            <p data-i18n="signedInAs">ログイン中のアカウント</p>
+            <strong id="signed-in-email"></strong>
+          </div>
+          <button id="logout-button" class="secondary-button" type="button" data-i18n="logoutButton">ログアウト</button>
+        </section>
+
+        <section id="complete-view" class="view completion" aria-labelledby="page-title" hidden>
+          <p class="completion-mark" aria-hidden="true">✓</p>
+          <p id="completion-copy" class="step-copy"></p>
+          <button id="completion-login" class="secondary-link" type="button" data-i18n="continueToLogin">ログインして続ける</button>
+          <a class="secondary-link" href="/" data-i18n="backHome">TomoNode に戻る</a>
+        </section>
+
+        <p id="status" class="status" role="status" aria-live="polite" hidden></p>
+
+        <footer class="card-footer">
+          <a href="/#legal" data-i18n="privacyLink">プライバシーと安全性</a>
+          <span aria-hidden="true">·</span>
+          <a href="/#faq" data-i18n="helpLink">ヘルプ</a>
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>

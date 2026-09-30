@@ -15,4 +15,20 @@ export interface AccountPasswordSetup {
   expiresInSeconds: number;
 }
 
+export type AccountBrowserAuthMode = "login" | "register";
+export type AccountBrowserAuthLocale = "ja" | "en";
+
+export interface AccountBrowserAuthStart {
+  browserUrl: string;
+  requestId: string;
+  userCode: string;
+  expiresInSeconds: number;
+  intervalSeconds: number;
+}
+
+export interface AccountBrowserAuthPoll {
+  status: "pending" | "complete" | "expired";
+  account: AccountProfile | null;
+}
+
 export type AccountAvatarMimeType = "image/png" | "image/jpeg" | "image/webp";

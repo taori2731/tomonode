@@ -56,6 +56,7 @@ use uuid::Uuid;
 
 use crate::{
     account_auth::{
+        account_browser_auth_cancel, account_browser_auth_poll, account_browser_auth_start,
         account_enroll_password, account_load_session, account_logout, account_password_login,
         account_remove_avatar, account_request_code, account_request_enrollment_code,
         account_request_password_reset, account_update_display_name, account_upload_avatar,
@@ -5044,6 +5045,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             quit_app,
+            account_browser_auth_start,
+            account_browser_auth_poll,
+            account_browser_auth_cancel,
             account_request_code,
             account_verify_code,
             account_password_login,

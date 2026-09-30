@@ -77,7 +77,16 @@ import type {
 import { isValidDeleteConfirmation } from "./deleteConfirmation";
 import { getNetworkProtocolForServerType, getServerMaxPlayers, isPalworldServer } from "./gameAdapter";
 import { ACCOUNT_API_BASE_URL } from "./accountConfig";
-import type { AccountAvatarMimeType, AccountPasswordChallenge, AccountPasswordSetup, AccountProfile } from "./accountTypes";
+import type {
+  AccountAvatarMimeType,
+  AccountBrowserAuthLocale,
+  AccountBrowserAuthMode,
+  AccountBrowserAuthPoll,
+  AccountBrowserAuthStart,
+  AccountPasswordChallenge,
+  AccountPasswordSetup,
+  AccountProfile,
+} from "./accountTypes";
 
 const inDesktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -298,6 +307,9 @@ export const backend = {
   accountLoadSession: () => desktopOr<AccountProfile | null>("account_load_session", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => null),
   accountRequestCode: (email: string) => desktopOr<void>("account_request_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, email }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
   accountVerifyCode: (email: string, code: string) => desktopOr<AccountProfile>("account_verify_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, email, code }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
+  accountBrowserAuthStart: (clientAttemptId: string, mode: AccountBrowserAuthMode, locale: AccountBrowserAuthLocale) => desktopOr<AccountBrowserAuthStart>("account_browser_auth_start", { apiBaseUrl: ACCOUNT_API_BASE_URL, clientAttemptId, mode, locale }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
+  accountBrowserAuthPoll: (requestId: string) => desktopOr<AccountBrowserAuthPoll>("account_browser_auth_poll", { apiBaseUrl: ACCOUNT_API_BASE_URL, requestId }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
+  accountBrowserAuthCancel: (clientAttemptId: string) => desktopOr<void>("account_browser_auth_cancel", { apiBaseUrl: ACCOUNT_API_BASE_URL, clientAttemptId }, () => Promise.resolve()),
   accountPasswordLogin: (email: string, password: string) => desktopOr<AccountPasswordChallenge>("account_password_login", { apiBaseUrl: ACCOUNT_API_BASE_URL, email, password }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
   accountVerifyLoginCode: (challengeId: string, code: string) => desktopOr<AccountProfile>("account_verify_login_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, challengeId, code }, () => Promise.reject(new Error("アカウントログインはインストール版Windowsアプリで利用できます"))),
   accountRequestEnrollmentCode: (email: string) => desktopOr<void>("account_request_enrollment_code", { apiBaseUrl: ACCOUNT_API_BASE_URL, email }, () => Promise.reject(new Error("アカウント登録はインストール版Windowsアプリで利用できます"))),
