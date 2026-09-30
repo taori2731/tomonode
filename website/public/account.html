@@ -153,9 +153,18 @@
         <p id="status" class="status" role="status" aria-live="polite" hidden></p>
 
         <footer class="card-footer">
-          <a href="/#legal" data-i18n="privacyLink">プライバシーと安全性</a>
-          <span aria-hidden="true">·</span>
-          <a href="/#faq" data-i18n="helpLink">ヘルプ</a>
+          <div class="footer-links">
+            <details class="account-data-notice">
+              <summary data-i18n="accountDataLabel">認証とデータの扱い</summary>
+              <div class="account-data-copy">
+                <p data-i18n="accountDataCloud">メールアドレスとアカウント情報は Cloudflare に保存されます。パスワードの確認・管理には Firebase Authentication を使用し、TomoNode のデータベースには平文パスワードを保存しません。確認コードを含むメールは Resend 経由で送信されます。</p>
+                <p data-i18n="accountDataToken">このページのセッショントークンはメモリ内だけに保持され、ブラウザーの保存領域には書き込みません。デスクトップアプリの認証情報は Windows Credential Manager に保存されます。</p>
+                <p data-i18n="accountDataTracking">このアカウントページには広告・解析ツールを設置していません。</p>
+                <p class="account-data-policy" data-i18n="accountDataPolicyPending">正式なプライバシーポリシーは現在整備中です。</p>
+              </div>
+            </details>
+            <a class="footer-help-group" href="/#faq" data-i18n="helpLink">ヘルプ</a>
+          </div>
         </footer>
       </section>
     </main>
