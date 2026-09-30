@@ -1,13 +1,17 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { chromium } = require("playwright");
 
 const baseUrl = process.env.ACCOUNT_QA_BASE_URL || "http://127.0.0.1:4179";
+const productionOrigin = "https://tomonode.site";
+const isProduction = new URL(baseUrl).origin === productionOrigin;
 const apiBase = "https://tomonode-account-api.rafaerunacaya27.workers.dev";
 const outputDir = path.resolve(process.env.ACCOUNT_QA_OUTPUT_DIR || path.join(os.tmpdir(), "tomonode-account-auth-qa"));
 fs.mkdirSync(outputDir, { recursive: true });
+const productionScriptAudits = [];
 
 function response(status, data = {}) {
   return { status, data };
@@ -40,17 +44,65 @@ async function installApiMock(page, resolver) {
   return calls;
 }
 
+const cloudflareChallengeTemplate = `(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'<request-id>',t:'<timestamp>'};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();`;
+
+function inspectProductionHtml(html, pathname) {
+  if (!isProduction) return null;
+
+  const expectedAppScripts = new Map([
+    ["/account.html", "/account.js"],
+    ["/password-reset.html", "/password-reset.js"],
+  ]);
+  const expectedAppScript = expectedAppScripts.get(pathname);
+  assert.ok(expectedAppScript, `production QA is not configured for ${pathname}`);
+
+  const tags = [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+  assert.equal((html.match(/<script\b/gi) || []).length, tags.length, `${pathname} must not contain malformed or unclosed script tags`);
+  const externalScripts = [];
+  const inlineScripts = [];
+  for (const [, attributes, body] of tags) {
+    const src = attributes.match(/(?:^|\s)src\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+    if (src) externalScripts.push(src[1] ?? src[2] ?? src[3]);
+    else inlineScripts.push(body);
+  }
+  assert.deepEqual(externalScripts, [expectedAppScript], `${pathname} must only load its same-origin app script`);
+  assert.ok(inlineScripts.length <= 1, `${pathname} must not contain unknown inline scripts`);
+  const cspMeta = html.match(/<meta\b(?=[^>]*http-equiv=(["'])Content-Security-Policy\1)[^>]*content=(["'])(.*?)\2[^>]*>/i);
+  assert.ok(cspMeta, `${pathname} must retain its page Content Security Policy`);
+  assert.match(cspMeta[3], /(?:^|;)\s*script-src\s+'self'(?:\s|;|$)/i, `${pathname} must keep script-src restricted to self`);
+  assert.doesNotMatch(cspMeta[3], /unsafe-inline/i, `${pathname} must not relax script-src with unsafe-inline`);
+  if (inlineScripts.length === 0) return { inlinePresent: false, sha256Base64: null, pathname, externalScripts };
+
+  const [inline] = inlineScripts;
+  const parameterPattern = /window\.__CF\$cv\$params=\{r:'([a-f0-9]{16})',t:'([A-Za-z0-9+/]{10,}={0,2})'\}/g;
+  const parameterMatches = [...inline.matchAll(parameterPattern)];
+  assert.equal(parameterMatches.length, 1, `${pathname} Cloudflare challenge must contain exactly one changing request/timestamp pair`);
+  const normalized = inline.replace(parameterPattern, "window.__CF$cv$params={r:'<request-id>',t:'<timestamp>'}");
+  assert.equal(normalized, cloudflareChallengeTemplate, `${pathname} contains an unrecognized inline script; only the known Cloudflare edge challenge is allowed`);
+
+  return {
+    inlinePresent: true,
+    sha256Base64: crypto.createHash("sha256").update(inline, "utf8").digest("base64"),
+    pathname,
+    externalScripts,
+  };
+}
+
 async function createPage(browser, { route, url, viewport = { width: 1280, height: 900 }, locale = "ja-JP" }) {
   const context = await browser.newContext({ viewport, locale });
   const page = await context.newPage();
   const consoleErrors = [];
-  page.on("pageerror", (error) => consoleErrors.push(error.message));
+  page.on("pageerror", (error) => consoleErrors.push({ source: "pageerror", message: error.message }));
   page.on("console", (message) => {
-    if (message.type() === "error") consoleErrors.push(message.text());
+    if (message.type() === "error") consoleErrors.push({ source: "console", message: message.text() });
   });
   const calls = await installApiMock(page, route);
-  await page.goto(`${baseUrl}${url}`, { waitUntil: "load" });
-  return { context, page, calls, consoleErrors };
+  const response = await page.goto(`${baseUrl}${url}`, { waitUntil: "load" });
+  const html = response ? await response.text() : "";
+  const pagePath = new URL(url, baseUrl).pathname;
+  const cloudflareCsp = inspectProductionHtml(html, pagePath);
+  if (cloudflareCsp) productionScriptAudits.push(cloudflareCsp);
+  return { context, page, calls, consoleErrors, cloudflareCsp };
 }
 
 async function assertVisible(locator, message) {
@@ -58,15 +110,30 @@ async function assertVisible(locator, message) {
   assert.equal(await locator.isVisible(), true, message);
 }
 
-async function assertNoBrowserErrors(consoleErrors, label, expectedMessages = []) {
-  const unexpected = consoleErrors.filter((message) => !expectedMessages.some((expected) => message.includes(expected)));
-  assert.deepEqual(unexpected, [], `${label} browser errors: ${unexpected.join(" | ")}`);
+function isRecognizedCloudflareCspRefusal(error, cloudflareCsp) {
+  if (!cloudflareCsp?.inlinePresent || error.source !== "console") return false;
+  const { message } = error;
+  return message.startsWith("Executing inline script violates the following Content Security Policy directive ")
+    && message.includes("directive 'script-src 'self''")
+    && message.includes(`'sha256-${cloudflareCsp.sha256Base64}'`)
+    && message.endsWith("The action has been blocked.");
+}
+
+async function assertNoBrowserErrors(consoleErrors, label, expectedMessages = [], cloudflareCsp = null) {
+  const recognizedCloudflareErrors = consoleErrors.filter((error) => isRecognizedCloudflareCspRefusal(error, cloudflareCsp));
+  if (cloudflareCsp) {
+    const expectedCloudflareRefusals = cloudflareCsp.inlinePresent ? 1 : 0;
+    assert.equal(recognizedCloudflareErrors.length, expectedCloudflareRefusals, `${label} must report exactly ${expectedCloudflareRefusals} CSP refusal(s) matching known Cloudflare inline content`);
+  }
+  const unexpected = consoleErrors.filter((error) => !isRecognizedCloudflareCspRefusal(error, cloudflareCsp)
+    && !expectedMessages.some((expected) => error.message.includes(expected)));
+  assert.deepEqual(unexpected, [], `${label} browser errors: ${unexpected.map((error) => `${error.source}: ${error.message}`).join(" | ")}`);
 }
 
 async function desktopConsentFlow(browser) {
   const id = "a1".repeat(16);
   const requests = [];
-  const { context, page, calls, consoleErrors } = await createPage(browser, {
+  const { context, page, calls, consoleErrors, cloudflareCsp } = await createPage(browser, {
     url: `/account.html?request=${id}&mode=login&lang=en`,
     locale: "en-US",
     route: async (request) => {
@@ -113,7 +180,7 @@ async function desktopConsentFlow(browser) {
     assert.equal(requests.find((item) => item.pathname === "/v1/auth/browser/approve").body.userCode, "ABCD-EFGH");
     assert.equal(new URL(requests.find((item) => item.pathname === "/v1/auth/browser/approve").url).search, "");
     assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
-    await assertNoBrowserErrors(consoleErrors, "desktop consent flow");
+    await assertNoBrowserErrors(consoleErrors, "desktop consent flow", [], cloudflareCsp);
     return { calls, screenshots: [initialScreenshot, consentScreenshot] };
   } finally {
     await context.close();
@@ -121,7 +188,7 @@ async function desktopConsentFlow(browser) {
 }
 
 async function registrationFlow(browser) {
-  const { context, page, calls, consoleErrors } = await createPage(browser, {
+  const { context, page, calls, consoleErrors, cloudflareCsp } = await createPage(browser, {
     url: "/account.html?mode=register&lang=ja",
     locale: "ja-JP",
     route: async (request) => {
@@ -162,7 +229,7 @@ async function registrationFlow(browser) {
     await assertVisible(page.locator("#login-view"), "registration CTA should return to login");
     assert.equal(await page.locator("#login-email").inputValue(), "new@example.com");
     assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
-    await assertNoBrowserErrors(consoleErrors, "registration flow");
+    await assertNoBrowserErrors(consoleErrors, "registration flow", [], cloudflareCsp);
     return { calls };
   } finally {
     await context.close();
@@ -170,7 +237,7 @@ async function registrationFlow(browser) {
 }
 
 async function resetRequestFlow(browser) {
-  const { context, page, calls, consoleErrors } = await createPage(browser, {
+  const { context, page, calls, consoleErrors, cloudflareCsp } = await createPage(browser, {
     url: "/account.html?lang=en",
     locale: "en-US",
     route: async (request) => request.pathname === "/v1/auth/password/request-reset"
@@ -186,7 +253,7 @@ async function resetRequestFlow(browser) {
     assert.equal(calls.length, 1);
     assert.equal(calls[0].pathname, "/v1/auth/password/request-reset");
     assert.equal(calls[0].body.email, "member@example.com");
-    await assertNoBrowserErrors(consoleErrors, "password reset request");
+    await assertNoBrowserErrors(consoleErrors, "password reset request", [], cloudflareCsp);
   } finally {
     await context.close();
   }
@@ -202,12 +269,13 @@ async function resetLinkAndLocales(browser) {
     assert.equal(await invalid.page.locator("#reset-form").isVisible(), false, "short reset link must not show the password form");
     assert.equal(new URL(invalid.page.url()).search, "", "reset action code must be removed from the URL");
     assert.match(await invalid.page.locator("#status").textContent(), /無効か期限切れ/);
+    await assertNoBrowserErrors(invalid.consoleErrors, "invalid reset link", [], invalid.cloudflareCsp);
   } finally {
     await invalid.context.close();
   }
 
   const localeValues = ["ja", "en", "de", "es", "fr", "ko", "pt-BR", "zh-CN", "zh-TW"];
-  const { context, page, calls, consoleErrors } = await createPage(browser, {
+  const { context, page, calls, consoleErrors, cloudflareCsp } = await createPage(browser, {
     url: `/password-reset.html?mode=resetPassword&oobCode=${"x".repeat(32)}`,
     locale: "ja-JP",
     route: async (request) => request.pathname === "/v1/auth/password/complete-reset"
@@ -237,7 +305,7 @@ async function resetLinkAndLocales(browser) {
     assert.equal(calls[0].pathname, "/v1/auth/password/complete-reset");
     assert.equal(calls[0].body.newPassword, "123456");
     assert.equal(new URL(calls[0].url).search, "", "reset secret must only be in the POST body, never the endpoint query");
-    await assertNoBrowserErrors(consoleErrors, "reset link flow", ["status of 410 (Gone)"]);
+    await assertNoBrowserErrors(consoleErrors, "reset link flow", ["status of 410 (Gone)"], cloudflareCsp);
   } finally {
     await context.close();
   }
@@ -253,6 +321,7 @@ async function expiredAndInvalidPairing(browser) {
     await pageStatusContains(invalid.page, "invalid or expired");
     assert.equal(invalid.calls.length, 0, "malformed request id must not be sent to the API");
     assert.equal(new URL(invalid.page.url()).search, "");
+    await assertNoBrowserErrors(invalid.consoleErrors, "malformed pairing link", [], invalid.cloudflareCsp);
   } finally {
     await invalid.context.close();
   }
@@ -266,7 +335,7 @@ async function expiredAndInvalidPairing(browser) {
     await pageStatusContains(expired.page, "already used or has expired");
     assert.equal(await expired.page.locator("#pairing-panel").isVisible(), false);
     assert.equal(new URL(expired.page.url()).search, "");
-    await assertNoBrowserErrors(expired.consoleErrors, "expired pairing link", ["status of 410 (Gone)"]);
+    await assertNoBrowserErrors(expired.consoleErrors, "expired pairing link", ["status of 410 (Gone)"], expired.cloudflareCsp);
   } finally {
     await expired.context.close();
   }
@@ -277,7 +346,7 @@ async function pageStatusContains(page, text) {
 }
 
 async function mobileLayout(browser) {
-  const { context, page, consoleErrors } = await createPage(browser, {
+  const { context, page, consoleErrors, cloudflareCsp } = await createPage(browser, {
     url: "/account.html?lang=ja",
     viewport: { width: 390, height: 844 },
     locale: "ja-JP",
@@ -298,7 +367,7 @@ async function mobileLayout(browser) {
     assert.ok(measurements.eye.width >= 44 && measurements.eye.height >= 44, "password visibility control should meet the 44px target");
     const screenshot = path.join(outputDir, "mobile-login-390x844.png");
     await page.screenshot({ path: screenshot });
-    await assertNoBrowserErrors(consoleErrors, "mobile layout");
+    await assertNoBrowserErrors(consoleErrors, "mobile layout", [], cloudflareCsp);
     return screenshot;
   } finally {
     await context.close();
@@ -325,6 +394,13 @@ async function mobileLayout(browser) {
     console.log(`Mobile viewport: 390x844, no horizontal overflow, logo loaded, eye target 44px; screenshot ${mobileScreenshot}`);
     console.log(`Desktop screenshots: ${desktop.screenshots.join("; ")}`);
     console.log(`Registration API sequence: ${registration.calls.map((item) => item.pathname).join(" -> ")}`);
+    if (isProduction) {
+      const auditedPaths = [...new Set(productionScriptAudits.map((audit) => audit.pathname))].join(", ");
+      const challengeCount = productionScriptAudits.filter((audit) => audit.inlinePresent).length;
+      console.log(`Production HTML script audit PASS: ${productionScriptAudits.length} responses (${auditedPaths}); only each page's same-origin app script plus ${challengeCount} recognized Cloudflare challenge inline(s); every present challenge hash matched its sole CSP refusal; strict script-src 'self' retained.`);
+    } else {
+      console.log("Production-only Cloudflare CSP exception disabled for this non-production origin.");
+    }
   } finally {
     await browser.close();
   }
