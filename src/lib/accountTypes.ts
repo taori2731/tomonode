@@ -1,8 +1,10 @@
 export interface AccountProfile {
+  userId?: string | null;
   email: string;
   displayName: string;
   hasPassword: boolean;
   avatarDataUrl: string | null;
+  createdAt?: number | null;
 }
 
 export interface AccountPasswordChallenge {

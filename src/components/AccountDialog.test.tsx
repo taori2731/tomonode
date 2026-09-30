@@ -12,10 +12,12 @@ vi.mock("./ExternalLinkHandler", () => ({ openExternalUrl: vi.fn() }));
 const copy = accountText("ja");
 const settingsCopy = accountSettingsText("ja");
 const profile: AccountProfile = {
+  userId: "b2807b4e-25af-4cd4-8c15-d324437e9bce",
   email: "player@example.com",
   displayName: "Player001",
   hasPassword: true,
   avatarDataUrl: null,
+  createdAt: 1790726400000,
 };
 const browserAuthStart: AccountBrowserAuthStart = {
   browserUrl: "https://tomonode.site/account.html?request=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&mode=login&lang=ja",
@@ -154,7 +156,26 @@ describe("AccountDialog", () => {
     unmount();
   });
 
-  it("opens the signed-in account as a three-tab settings dialog", () => {
+  it("routes email change for an account without a password to browser password setup", async () => {
+    backend.isDesktop = true;
+    const startAuth = vi.spyOn(backend, "accountBrowserAuthStart").mockResolvedValue({
+      ...browserAuthStart,
+      browserUrl: "https://tomonode.site/account.html?request=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&mode=register&lang=ja",
+    });
+    vi.spyOn(backend, "accountBrowserAuthPoll").mockResolvedValue({ status: "pending", account: null });
+    vi.mocked(openExternalUrl).mockResolvedValue(undefined);
+    renderAccount(vi.fn(), { ...profile, hasPassword: false }, true);
+    const settings = screen.getByRole("dialog", { name: copy.accountSettings });
+
+    fireEvent.click(within(settings).getByRole("button", { name: copy.emailChange }));
+    expect(within(settings).getByText(settingsCopy.emailChangePasswordRequired)).toBeInTheDocument();
+    fireEvent.click(within(settings).getByRole("button", { name: copy.enroll }));
+
+    expect(await screen.findByLabelText(copy.browserAuthCode)).toHaveTextContent(browserAuthStart.userCode);
+    expect(startAuth).toHaveBeenCalledWith(expect.any(String), "register", "ja");
+  });
+
+  it("opens the signed-in account as a three-tab settings dialog", async () => {
     renderAccount();
 
     const menu = screen.getByRole("dialog", { name: copy.accountSettings });
@@ -164,16 +185,63 @@ describe("AccountDialog", () => {
     expect(within(menu).getAllByRole("tab")).toHaveLength(3);
     expect(within(menu).getByRole("tab", { name: settingsCopy.profileTab })).toHaveAttribute("aria-selected", "true");
     expect(within(menu).getByText(settingsCopy.userId)).toBeInTheDocument();
+    expect(within(menu).getByText(profile.userId!)).toBeInTheDocument();
+    expect(within(menu).getByText(settingsCopy.accountCreated).closest(".account-settings-field")).toHaveTextContent(
+      new Intl.DateTimeFormat("ja", { dateStyle: "medium" }).format(profile.createdAt!),
+    );
+    const copyId = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined);
+    fireEvent.click(within(menu).getByRole("button", { name: settingsCopy.copyUserId }));
+    expect(copyId).toHaveBeenCalledWith(profile.userId);
+    expect(await within(menu).findByRole("status")).toHaveTextContent(settingsCopy.userIdCopied);
+    expect(within(menu).queryByText(copy.devices)).not.toBeInTheDocument();
+    expect(within(menu).queryByText(copy.otherDeviceLogout)).not.toBeInTheDocument();
+    expect(within(menu).queryByText(copy.autoLogin)).not.toBeInTheDocument();
+    expect(within(menu).queryByText(copy.dataCollection)).not.toBeInTheDocument();
+    expect(within(menu).queryByText(copy.privacy)).not.toBeInTheDocument();
 
     fireEvent.click(within(menu).getByRole("tab", { name: copy.security }));
     expect(within(menu).getByRole("tab", { name: copy.security })).toHaveAttribute("aria-selected", "true");
-    expect(within(menu).getAllByText(settingsCopy.currentDevice)).toHaveLength(2);
-    expect(within(menu).getByRole("button", { name: new RegExp(copy.otherDeviceLogout) })).toBeDisabled();
+    expect(within(menu).queryByText(copy.devices)).not.toBeInTheDocument();
+    expect(within(menu).queryByText(copy.deviceLoginActive)).not.toBeInTheDocument();
+    expect(within(menu).getByText(copy.deleteAccount)).toBeInTheDocument();
+    expect(within(menu).getByRole("button", { name: copy.preparing })).toBeDisabled();
 
     fireEvent.click(within(menu).getByRole("tab", { name: copy.plan }));
     expect(within(menu).getByRole("tab", { name: copy.plan })).toHaveAttribute("aria-selected", "true");
     expect(within(menu).getByText(settingsCopy.supporterPending)).toBeInTheDocument();
     expect(within(menu).getByRole("button", { name: new RegExp(copy.seePlans) })).toBeDisabled();
+  });
+
+  it("requests email change from Profile and Security without changing the active profile email", async () => {
+    backend.isDesktop = true;
+    const requestEmailChange = vi.spyOn(backend, "accountRequestEmailChange")
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("INVALID_CREDENTIALS"));
+    const { onProfileChange } = renderAccount();
+    const menu = screen.getByRole("dialog", { name: copy.accountSettings });
+
+    fireEvent.click(within(menu).getByRole("button", { name: copy.emailChange }));
+    fireEvent.change(within(menu).getByRole("textbox", { name: settingsCopy.emailChangeNewEmail }), { target: { value: "new@example.com" } });
+    fireEvent.change(within(menu).getByLabelText(settingsCopy.emailChangeCurrentPassword), { target: { value: "current-pass" } });
+    fireEvent.click(within(menu).getByRole("button", { name: settingsCopy.emailChangeSend }));
+
+    expect(await within(menu).findByText(settingsCopy.emailChangeRequested)).toBeInTheDocument();
+    expect(requestEmailChange).toHaveBeenNthCalledWith(1, "new@example.com", "current-pass");
+    expect(onProfileChange).not.toHaveBeenCalled();
+    expect(within(menu).getByLabelText(settingsCopy.emailChangeCurrentPassword)).toHaveValue("");
+
+    fireEvent.click(within(menu).getByRole("tab", { name: copy.security }));
+    fireEvent.click(within(menu).getByRole("button", { name: copy.emailChange }));
+    fireEvent.change(within(menu).getByRole("textbox", { name: settingsCopy.emailChangeNewEmail }), { target: { value: "another@example.com" } });
+    fireEvent.change(within(menu).getByLabelText(settingsCopy.emailChangeCurrentPassword), { target: { value: "wrong-pass" } });
+    fireEvent.click(within(menu).getByRole("button", { name: settingsCopy.emailChangeSend }));
+
+    expect(await within(menu).findByRole("alert")).toHaveTextContent("INVALID_CREDENTIALS");
+    expect(requestEmailChange).toHaveBeenNthCalledWith(2, "another@example.com", "wrong-pass");
+    fireEvent.click(within(menu).getByRole("button", { name: settingsCopy.emailChangeCancel }));
+    expect(within(menu).getByText(profile.email)).toBeInTheDocument();
+    fireEvent.click(within(menu).getByRole("button", { name: copy.emailChange }));
+    expect(within(menu).getByLabelText(settingsCopy.emailChangeCurrentPassword)).toHaveValue("");
   });
 
   it("lets a signed-in user edit their display name and synchronizes the profile change", async () => {
@@ -212,7 +280,7 @@ describe("AccountDialog", () => {
     expect(menu).toHaveFocus();
 
     fireEvent.keyDown(document, { key: "Tab", shiftKey: true });
-    expect(within(menu).getByRole("button", { name: copy.accountSettings })).toHaveFocus();
+    expect(within(menu).getByRole("button", { name: settingsCopy.copyUserId })).toHaveFocus();
 
     fireEvent.keyDown(document, { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);

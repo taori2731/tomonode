@@ -19,6 +19,12 @@ function response(status, data = {}) {
 
 async function installApiMock(page, resolver) {
   const calls = [];
+  const localBrandAsset = path.resolve(__dirname, "../../public/assets/tomonode-icon-bg-black.png");
+  if (!isProduction && fs.existsSync(localBrandAsset)) {
+    await page.route(`${new URL(baseUrl).origin}/assets/tomonode-icon-bg-black.png`, async (route) => {
+      await route.fulfill({ status: 200, contentType: "image/png", body: fs.readFileSync(localBrandAsset) });
+    });
+  }
   await page.route(`${apiBase}/**`, async (route) => {
     const request = route.request();
     const origin = request.headers().origin || "*";
@@ -35,7 +41,14 @@ async function installApiMock(page, resolver) {
     }
     let body = null;
     try { body = request.postDataJSON(); } catch {}
-    const entry = { method: request.method(), url: request.url(), pathname: new URL(request.url()).pathname, body };
+    const entry = {
+      method: request.method(),
+      url: request.url(),
+      pathname: new URL(request.url()).pathname,
+      body,
+      referer: request.headers().referer || "",
+      hasAuthorization: Boolean(request.headers().authorization),
+    };
     calls.push(entry);
     const result = await resolver(entry);
     const headers = { ...corsHeaders, "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
@@ -194,7 +207,13 @@ async function registrationFlow(browser) {
     route: async (request) => {
       if (request.pathname === "/v1/auth/password/request-enrollment-code") return response(202, { sent: true, expiresInSeconds: 600 });
       if (request.pathname === "/v1/auth/password/verify-enrollment-code") return response(200, { setupToken: "3".repeat(64), expiresInSeconds: 600 });
-      if (request.pathname === "/v1/auth/password/enroll") return response(201, { enrolled: true });
+      if (request.pathname === "/v1/auth/password/enroll") return response(200, {
+        passwordSet: true,
+        enrolled: true,
+        accessToken: "4".repeat(64),
+        expiresAt: "2030-01-01T00:00:00.000Z",
+        account: { userId: "new-user", email: "new@example.com", createdAt: "2026-09-30T00:00:00.000Z", displayName: null, hasPassword: true },
+      });
       return response(404, { error: "NOT_FOUND" });
     },
   });
@@ -219,17 +238,66 @@ async function registrationFlow(browser) {
 
     await page.locator("#register-code").fill("654321");
     await page.locator("#register-code-form button[type=submit]").click();
-    await assertVisible(page.locator("#complete-view"), "successful verification and enrollment should complete");
+    await assertVisible(page.locator("#signed-in-view"), "successful verification and enrollment should sign in immediately");
+    assert.equal(await page.locator("#signed-in-email").textContent(), "new@example.com");
+    assert.equal(await page.locator("#complete-view").isVisible(), false, "enrollment must not route through a login-again completion view");
     assert.equal(await page.locator("#register-password").inputValue(), "", "enrollment password should be cleared after success");
     assert.equal(await page.locator("#register-confirm").inputValue(), "", "confirmation password should be cleared after success");
+    assert.equal(await page.locator("#register-code").inputValue(), "", "email OTP should be cleared after success");
     assert.equal(calls.map((item) => item.pathname).join(","), "/v1/auth/password/request-enrollment-code,/v1/auth/password/verify-enrollment-code,/v1/auth/password/enroll");
     assert.equal(calls[2].body.password, "123456");
-    assert.equal(await page.locator("#completion-login").isVisible(), true, "registration should offer a login CTA");
-    await page.locator("#completion-login").click();
-    await assertVisible(page.locator("#login-view"), "registration CTA should return to login");
-    assert.equal(await page.locator("#login-email").inputValue(), "new@example.com");
+    assert.equal(calls.some((item) => item.pathname === "/v1/auth/password/login" || item.pathname === "/v1/auth/password/verify-login-code"), false, "registration must not require a second password or OTP login");
+    assert.equal(new URL(page.url()).search, "", "registration must not put session data in the URL");
     assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
+    const screenshot = path.join(outputDir, "registration-signed-in.png");
+    await page.screenshot({ path: screenshot });
     await assertNoBrowserErrors(consoleErrors, "registration flow", [], cloudflareCsp);
+    return { calls, screenshot };
+  } finally {
+    await context.close();
+  }
+}
+
+async function registrationPairingFlow(browser) {
+  const id = "b2".repeat(16);
+  const { context, page, calls, consoleErrors, cloudflareCsp } = await createPage(browser, {
+    url: `/account.html?request=${id}&mode=register&lang=en`,
+    locale: "en-US",
+    route: async (request) => {
+      if (request.pathname === "/v1/auth/browser/request" && request.method === "GET") return response(200, { userCode: "CDEF-GHJK", expiresInSeconds: 600, status: "pending" });
+      if (request.pathname === "/v1/auth/password/request-enrollment-code") return response(202, { sent: true, expiresInSeconds: 600 });
+      if (request.pathname === "/v1/auth/password/verify-enrollment-code") return response(200, { setupToken: "5".repeat(64), expiresInSeconds: 600 });
+      if (request.pathname === "/v1/auth/password/enroll") return response(200, {
+        passwordSet: true,
+        enrolled: true,
+        accessToken: "6".repeat(64),
+        expiresAt: "2030-01-01T00:00:00.000Z",
+        account: { userId: "pair-user", email: "pair@example.com", createdAt: "2026-09-30T00:00:00.000Z", displayName: null, hasPassword: true },
+      });
+      if (request.pathname === "/v1/auth/browser/approve") return response(200, { approved: true });
+      return response(404, { error: "NOT_FOUND" });
+    },
+  });
+  try {
+    await assertVisible(page.locator("#register-view"), "desktop pairing registration URL should open registration");
+    await assertVisible(page.locator("#pairing-panel"), "valid desktop pairing should display its confirmation code");
+    await page.locator("#register-email").fill("pair@example.com");
+    await page.locator("#register-password").fill("secret6");
+    await page.locator("#register-confirm").fill("secret6");
+    await page.locator("#register-form button[type=submit]").click();
+    await assertVisible(page.locator("#register-code-form"), "pairing registration should request the enrollment code");
+    await page.locator("#register-code").fill("123456");
+    await page.locator("#register-code-form button[type=submit]").click();
+    await assertVisible(page.locator("#consent-view"), "registration should sign in and continue to explicit pairing consent");
+    assert.equal(await page.locator("#consent-email").textContent(), "pair@example.com");
+    assert.equal(await page.locator("#consent-user-code").textContent(), "CDEF-GHJK");
+    assert.equal(calls.filter((item) => item.pathname === "/v1/auth/browser/approve").length, 0, "registration must not automatically approve desktop access");
+    assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
+    await page.getByRole("button", { name: "Sign in to this app" }).click();
+    await assertVisible(page.locator("#complete-view"), "only the explicit user action should approve the desktop request");
+    assert.equal(calls.map((item) => item.pathname).filter((pathname) => pathname === "/v1/auth/password/login" || pathname === "/v1/auth/password/verify-login-code").length, 0);
+    assert.equal(new URL(page.url()).search, "");
+    await assertNoBrowserErrors(consoleErrors, "registration to desktop consent flow", [], cloudflareCsp);
     return { calls };
   } finally {
     await context.close();
@@ -311,6 +379,156 @@ async function resetLinkAndLocales(browser) {
   }
 }
 
+async function emailChangeCallbackFlow(browser) {
+  const oobCode = "email-change-code-0123456789abcdef";
+  const { context, page, calls, consoleErrors, cloudflareCsp } = await createPage(browser, {
+    url: `/password-reset.html?mode=verifyAndChangeEmail&oobCode=${oobCode}&continueUrl=https%3A%2F%2Fevil.example%2Fkeep`,
+    viewport: { width: 390, height: 844 },
+    locale: "en-US",
+    route: async (request) => request.pathname === "/v1/auth/email-change/complete"
+      ? response(200, { emailChanged: true, account: { userId: "member-1", email: "new@example.com", createdAt: "2026-09-30T00:00:00.000Z", displayName: null, hasPassword: true } })
+      : response(404, { error: "NOT_FOUND" }),
+  });
+  try {
+    await pageStatusContains(page, "Your email address has changed");
+    assert.match(await page.title(), /Change your email address/);
+    assert.equal(await page.locator("#reset-form").isVisible(), false, "email-change link must not show the password reset form");
+    assert.equal(new URL(page.url()).search, "", "email-change OOB code and continuation parameters must be removed before request");
+    assert.equal(calls.length, 1, "email-change link should call only its completion API");
+    assert.equal(calls[0].pathname, "/v1/auth/email-change/complete");
+    assert.deepEqual(calls[0].body, { oobCode });
+    assert.equal(new URL(calls[0].url).search, "", "OOB code must only be sent in the POST body");
+    assert.equal(calls[0].referer.includes(oobCode), false, "OOB code must not be sent in the Referer header");
+    assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 }, "email-change callback must not store a token");
+    const measurements = await page.evaluate(() => ({ clientWidth: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
+    assert.equal(measurements.scrollWidth, measurements.clientWidth, "mobile email-change result must not overflow horizontally");
+    const screenshot = path.join(outputDir, "mobile-email-change-390x844.png");
+    await page.screenshot({ path: screenshot });
+    await assertNoBrowserErrors(consoleErrors, "email-change completion", [], cloudflareCsp);
+    return { calls, screenshot };
+  } finally {
+    await context.close();
+  }
+}
+
+async function resetRetryFlow(browser) {
+  const code = "retry-reset-code-0123456789";
+  let attempts = 0;
+  const { context, page, calls } = await createPage(browser, {
+    url: `/password-reset.html?mode=resetPassword&oobCode=${code}`, locale: "en-US",
+    route: async () => ++attempts === 1 ? response(503, { error: "AUTH_PROVIDER_UNAVAILABLE" }) : response(200, { passwordChanged: true }),
+  });
+  try {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await page.locator("#password").fill("six123");
+      await page.locator("#confirm-password").fill("six123");
+      await page.locator("#submit-button").click();
+      await page.waitForFunction(() => document.querySelector("#status").classList.contains("error") || document.querySelector("#status").classList.contains("success"));
+      assert.equal(await page.locator("#password").inputValue(), "");
+    }
+    assert.deepEqual(calls.map(x => x.body.oobCode), [code, code], "transient failure must retain the in-memory action code for retry");
+    assert.equal(await page.locator("#reset-form").isVisible(), false);
+    assert.equal(new URL(page.url()).search, "");
+  } finally { await context.close(); }
+}
+
+async function emailChangeFailureFlows(browser) {
+  const scenarios = [
+    { name: "expired email link", status: 400, data: { error: "INVALID_OR_EXPIRED_EMAIL_CHANGE" }, message: "This confirmation link is invalid or expired" },
+    { name: "email already in use", status: 409, data: { error: "EMAIL_IN_USE" }, message: "This change could not be completed" },
+    { name: "email provider unavailable", status: 503, data: { error: "PROVIDER_UNAVAILABLE" }, message: "Email changes are unavailable" },
+    { name: "email identity mismatch", status: 401, data: { error: "IDENTITY_MISMATCH" }, message: "This confirmation link is invalid or expired" },
+  ];
+  for (const scenario of scenarios) {
+    const code = `email-change-${scenario.status}-0123456789`;
+    const { context, page, calls, consoleErrors, cloudflareCsp } = await createPage(browser, {
+      url: `/password-reset.html?mode=verifyAndChangeEmail&oobCode=${code}`,
+      locale: "en-US",
+      route: async (request) => request.pathname === "/v1/auth/email-change/complete"
+        ? response(scenario.status, scenario.data)
+        : response(404, { error: "NOT_FOUND" }),
+    });
+    try {
+      await pageStatusContains(page, scenario.message);
+      assert.equal(calls.length, 1, `${scenario.name} should call completion exactly once`);
+      assert.equal(calls[0].body.oobCode, code);
+      assert.equal(new URL(page.url()).search, "");
+      await assertNoBrowserErrors(consoleErrors, scenario.name, [`status of ${scenario.status} (`], cloudflareCsp);
+    } finally {
+      await context.close();
+    }
+  }
+
+  const malformed = await createPage(browser, {
+    url: "/password-reset.html?mode=verifyAndChangeEmail&oobCode=short",
+    locale: "en-US",
+    route: async () => response(404, { error: "NOT_FOUND" }),
+  });
+  try {
+    assert.match(await malformed.page.locator("#status").textContent(), /invalid or has expired/i);
+    assert.equal(malformed.calls.length, 0, "malformed email-change code must not be sent to the Worker");
+    assert.equal(new URL(malformed.page.url()).search, "", "malformed callback query must also be cleared");
+    await assertNoBrowserErrors(malformed.consoleErrors, "malformed email-change link", [], malformed.cloudflareCsp);
+  } finally {
+    await malformed.context.close();
+  }
+}
+
+async function recoverEmailHandoffFlow(browser) {
+  const apiKey = `AIza${"a".repeat(35)}`;
+  const oobCode = "recover-email-code-0123456789abcdef";
+  const { context, page, calls, consoleErrors, cloudflareCsp } = await createPage(browser, {
+    url: `/password-reset.html?mode=recoverEmail&oobCode=${oobCode}&apiKey=${apiKey}&lang=zh-CN&continueUrl=https%3A%2F%2Fevil.example%2Fcollect&tenantId=attacker&projectId=attacker`,
+    locale: "en-US",
+    route: async () => response(404, { error: "NOT_FOUND" }),
+  });
+  const handoffs = [];
+  try {
+    await pageStatusContains(page, "点击按钮打开 Firebase 官方页面");
+    const button = page.locator("#recovery-handoff");
+    await assertVisible(button, "valid recoverEmail link should offer a manual Firebase handoff");
+    assert.equal(new URL(page.url()).search, "", "all inbound recovery parameters must be removed before the explicit handoff");
+    assert.equal(calls.length, 0, "recoverEmail must not be sent to the email-change Worker endpoint");
+    await page.route("https://tomonode-auth.firebaseapp.com/**", async (route) => {
+      const request = route.request();
+      handoffs.push({ url: request.url(), referer: request.headers().referer || "" });
+      await route.fulfill({ status: 200, contentType: "text/html; charset=utf-8", body: "<!doctype html><title>Mock Firebase action</title>" });
+    });
+    await button.focus();
+    await page.keyboard.press("Enter");
+    await page.waitForURL("https://tomonode-auth.firebaseapp.com/__/auth/action**");
+    assert.equal(handoffs.length, 1, "Firebase action page must only open after the user activates the button");
+    const destination = new URL(handoffs[0].url);
+    assert.equal(destination.origin, "https://tomonode-auth.firebaseapp.com");
+    assert.equal(destination.pathname, "/__/auth/action");
+    assert.deepEqual([...destination.searchParams.keys()].sort(), ["apiKey", "lang", "mode", "oobCode"]);
+    assert.equal(destination.searchParams.get("mode"), "recoverEmail");
+    assert.equal(destination.searchParams.get("oobCode"), oobCode);
+    assert.equal(destination.searchParams.get("apiKey"), apiKey);
+    assert.equal(destination.searchParams.get("lang"), "zh-CN");
+    assert.equal(handoffs[0].referer.includes(oobCode), false, "recovery code must not be sent as a Referer");
+    assert.equal(calls.length, 0, "recoverEmail must never call email-change/complete");
+    await assertNoBrowserErrors(consoleErrors, "recoverEmail Firebase handoff", [], cloudflareCsp);
+  } finally {
+    await context.close();
+  }
+
+  const invalidApiKey = await createPage(browser, {
+    url: `/password-reset.html?mode=recoverEmail&oobCode=${oobCode}&apiKey=not-a-firebase-key&continueUrl=https%3A%2F%2Fevil.example`,
+    locale: "en-US",
+    route: async () => response(404, { error: "NOT_FOUND" }),
+  });
+  try {
+    await pageStatusContains(invalidApiKey.page, "could not be verified safely");
+    assert.equal(await invalidApiKey.page.locator("#recovery-handoff").isVisible(), false, "invalid apiKey must not enable outbound recovery navigation");
+    assert.equal(invalidApiKey.calls.length, 0);
+    assert.equal(new URL(invalidApiKey.page.url()).search, "");
+    await assertNoBrowserErrors(invalidApiKey.consoleErrors, "invalid recoverEmail apiKey", [], invalidApiKey.cloudflareCsp);
+  } finally {
+    await invalidApiKey.context.close();
+  }
+}
+
 async function expiredAndInvalidPairing(browser) {
   const invalid = await createPage(browser, {
     url: "/account.html?request=not-a-request&mode=login&lang=en",
@@ -385,15 +603,23 @@ async function mobileLayout(browser) {
   try {
     const desktop = await desktopConsentFlow(browser);
     const registration = await registrationFlow(browser);
+    const registrationPairing = await registrationPairingFlow(browser);
     await resetRequestFlow(browser);
     await resetLinkAndLocales(browser);
+    await resetRetryFlow(browser);
+    const emailChange = await emailChangeCallbackFlow(browser);
+    await emailChangeFailureFlows(browser);
+    await recoverEmailHandoffFlow(browser);
     await expiredAndInvalidPairing(browser);
     const mobileScreenshot = await mobileLayout(browser);
     console.log("Playwright mocked auth QA PASS");
-    console.log("Flows: desktop login + OTP + explicit pairing consent; register 5 reject/6 accept + email OTP + enrollment; generic reset request; reset 5 reject/6 API + expired/invalid links; malformed/expired desktop request; no web storage.");
+    console.log("Flows: desktop login + OTP + explicit pairing consent; register 5 reject/6 accept + email OTP + enrollment autologin; registration-to-desktop explicit consent; generic reset request; reset 5 reject/6 API + expired/invalid links; email-change success/invalid/expired/identity/collision/provider/network handling; safe recoverEmail Firebase handoff; malformed/expired desktop request; no session tokens in browser storage.");
     console.log(`Mobile viewport: 390x844, no horizontal overflow, logo loaded, eye target 44px; screenshot ${mobileScreenshot}`);
     console.log(`Desktop screenshots: ${desktop.screenshots.join("; ")}`);
+    console.log(`Signed-in registration screenshot: ${registration.screenshot}`);
+    console.log(`Email-change mobile screenshot: ${emailChange.screenshot}`);
     console.log(`Registration API sequence: ${registration.calls.map((item) => item.pathname).join(" -> ")}`);
+    console.log(`Registration pairing API sequence: ${registrationPairing.calls.map((item) => item.pathname).join(" -> ")}`);
     if (isProduction) {
       const auditedPaths = [...new Set(productionScriptAudits.map((audit) => audit.pathname))].join(", ");
       const challengeCount = productionScriptAudits.filter((audit) => audit.inlinePresent).length;

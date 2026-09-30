@@ -1,6 +1,6 @@
 [package]
 name = "minecraft-server-hub"
-version = "0.5.10"
+version = "0.5.11"
 description = "A safe local Minecraft and Palworld dedicated server manager for Windows"
 authors = ["Minecraft Server Hub contributors"]
 license = "Apache-2.0"
@@ -38,6 +38,7 @@ thiserror = "2.0.18"
 tokio = { version = "1.53.1", features = ["macros", "process", "rt", "sync", "time"] }
 playit-ipc = { git = "https://github.com/playit-cloud/playit-agent", tag = "v1.0.10", package = "playit-ipc" }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
+zeroize = "1.9.0"
 walkdir = "2.5.0"
 zip = { version = "8.4.0", default-features = false, features = ["deflate"] }
 

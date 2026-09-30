@@ -9,6 +9,7 @@ use std::{
 };
 use tauri::State;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::{
     AppState,
@@ -200,6 +201,8 @@ fn production_api_host() -> Option<String> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
     pub email: String,
     #[serde(default)]
     pub display_name: String,
@@ -207,6 +210,8 @@ pub struct AccountProfile {
     pub has_password: bool,
     #[serde(default)]
     pub avatar_data_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -245,6 +250,18 @@ struct CodeRequest<'a> {
 struct PasswordLoginRequest<'a> {
     email: &'a str,
     password: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EmailChangeRequest<'a> {
+    new_email: &'a str,
+    current_password: &'a str,
+}
+
+#[derive(Deserialize)]
+struct EmailChangeResponse {
+    requested: bool,
 }
 
 #[derive(Serialize)]
@@ -458,6 +475,18 @@ fn status_error(status: StatusCode, body: &[u8]) -> AppError {
         "EMAIL_UNAVAILABLE" => "確認メールを送信できませんでした。時間をおいて再度お試しください。",
         "SESSION_EXPIRED" => "ログインの有効期限が切れました。もう一度ログインしてください。",
         "INVALID_CREDENTIALS" => "メールアドレスまたはパスワードが正しくありません。",
+        "INVALID_EMAIL" => "変更後のメールアドレスを確認してください。",
+        "EMAIL_UNCHANGED" => "現在とは異なるメールアドレスを入力してください。",
+        "PASSWORD_NOT_SET" => {
+            "メールアドレスを変更する前に、アカウントのパスワードを設定してください。"
+        }
+        "EMAIL_IN_USE" => "このメールアドレスはすでに別のアカウントで使用されています。",
+        "EMAIL_CHANGE_PENDING" => {
+            "メールアドレスの確認手続きがすでに進行中です。受信メールを確認してください。"
+        }
+        "AUTH_PROVIDER_UNAVAILABLE" => {
+            "認証サービスを利用できません。時間をおいて再度お試しください。"
+        }
         "PASSWORD_REQUIREMENTS_NOT_MET" => {
             "パスワードは6〜128文字（UTF-8で512バイト以下）で入力してください。"
         }
@@ -1316,6 +1345,39 @@ pub async fn account_update_display_name(
 }
 
 #[tauri::command]
+pub async fn account_request_email_change(
+    api_base_url: String,
+    new_email: String,
+    current_password: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let current_password = Zeroizing::new(current_password);
+    let session = load_session()?.ok_or_else(|| {
+        AppError::Validation("メールアドレスを変更するにはログインしてください".into())
+    })?;
+    let url = api_endpoint(&api_base_url, "v1/account/email-change/request")?;
+    let response = state
+        .client
+        .post(url)
+        .bearer_auth(session.access_token)
+        .json(&EmailChangeRequest {
+            new_email: &new_email,
+            current_password: current_password.as_str(),
+        })
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|_| network_error())?;
+    let response: EmailChangeResponse = decode_response(response).await?;
+    if !response.requested {
+        return Err(AppError::Other(
+            "メールアドレスの確認メールを送信できませんでした".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn account_upload_avatar(
     api_base_url: String,
     mime_type: String,
@@ -1465,9 +1527,9 @@ pub async fn account_logout(api_base_url: String, state: State<'_, AppState>) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        BROWSER_LOGIN_URL, BrowserAuthPollRequest, BrowserAuthPollResponse, api_endpoint,
-        browser_code_challenge, random_browser_verifier, valid_browser_request_id,
-        valid_browser_user_code, validate_browser_auth_url,
+        AccountProfile, BROWSER_LOGIN_URL, BrowserAuthPollRequest, BrowserAuthPollResponse,
+        EmailChangeRequest, api_endpoint, browser_code_challenge, random_browser_verifier,
+        valid_browser_request_id, valid_browser_user_code, validate_browser_auth_url,
     };
 
     #[test]
@@ -1501,6 +1563,49 @@ mod tests {
         assert_eq!(json["requestId"], "0123456789abcdef0123456789abcdef");
         assert_eq!(json["codeVerifier"], verifier);
         assert!(json.get("verifier").is_none());
+    }
+
+    #[test]
+    fn email_change_request_uses_worker_camel_case_fields() {
+        let request = EmailChangeRequest {
+            new_email: "new@example.com",
+            current_password: "secret-password",
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["newEmail"], "new@example.com");
+        assert_eq!(json["currentPassword"], "secret-password");
+        assert!(json.get("current_password").is_none());
+    }
+
+    #[test]
+    fn account_profile_keeps_real_identity_fields_and_omits_missing_metadata() {
+        let response = serde_json::json!({
+            "email": "player@example.com",
+            "displayName": "Player001",
+            "hasPassword": true,
+            "avatarDataUrl": null,
+            "userId": "b2807b4e-25af-4cd4-8c15-d324437e9bce",
+            "createdAt": 1790726400000_u64
+        });
+        let account: AccountProfile = serde_json::from_value(response).unwrap();
+        assert_eq!(
+            account.user_id.as_deref(),
+            Some("b2807b4e-25af-4cd4-8c15-d324437e9bce")
+        );
+        assert_eq!(account.created_at, Some(1790726400000));
+
+        let legacy: AccountProfile = serde_json::from_value(serde_json::json!({
+            "email": "old@example.com",
+            "displayName": "OldAccount",
+            "hasPassword": false,
+            "avatarDataUrl": null
+        }))
+        .unwrap();
+        assert_eq!(legacy.user_id, None);
+        assert_eq!(legacy.created_at, None);
+        let serialized = serde_json::to_value(legacy).unwrap();
+        assert!(serialized.get("userId").is_none());
+        assert!(serialized.get("createdAt").is_none());
     }
 
     #[test]
