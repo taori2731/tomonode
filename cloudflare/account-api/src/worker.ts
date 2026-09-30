@@ -11,6 +11,7 @@ export interface Env {
 interface AccountRow {
   id: string;
   email: string;
+  created_at: number;
   firebase_uid?: string | null;
   credential_version?: number;
   display_name?: string | null;
@@ -19,6 +20,7 @@ interface AccountRow {
 interface SessionRow extends AccountRow {
   token_hash: string;
   session_credential_version: number;
+  session_created_at?: number;
 }
 
 interface FirebaseResult {
@@ -43,6 +45,7 @@ const MAX_AVATAR_REQUEST_BYTES = 180 * 1024;
 const MAX_DISPLAY_NAME_CODE_POINTS = 32;
 const BROWSER_AUTH_TTL_MS = 10 * 60 * 1000;
 const BROWSER_AUTH_POLL_INTERVAL_MS = 3 * 1000;
+const EMAIL_CHANGE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -244,6 +247,16 @@ function displayNameFor(account: AccountRow): string {
   return saved || defaultDisplayName(account.email);
 }
 
+function publicAccount(account: AccountRow, hasPassword = Boolean(account.firebase_uid)) {
+  return {
+    userId: account.id,
+    email: account.email,
+    createdAt: account.created_at,
+    displayName: displayNameFor(account),
+    hasPassword,
+  };
+}
+
 function validDisplayName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
@@ -440,13 +453,13 @@ async function linkFirebaseAccount(env: Env, email: string, firebaseUid: string,
      VALUES (?, ?, ?, 1, ?, ?)
      ON CONFLICT(email) DO NOTHING`,
   ).bind(crypto.randomUUID(), email, firebaseUid, defaultDisplayName(email), now).run();
-  let account = await env.DB.prepare("SELECT id, email, firebase_uid, credential_version, display_name FROM accounts WHERE email = ?")
+  let account = await env.DB.prepare("SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE email = ?")
     .bind(email).first<AccountRow>();
   if (!account || (account.firebase_uid && account.firebase_uid !== firebaseUid)) return null;
   if (!account.firebase_uid) {
     await env.DB.prepare("UPDATE OR IGNORE accounts SET firebase_uid = ?, credential_version = credential_version + 1 WHERE id = ? AND firebase_uid IS NULL")
       .bind(firebaseUid, account.id).run();
-    account = await env.DB.prepare("SELECT id, email, firebase_uid, credential_version, display_name FROM accounts WHERE id = ?")
+    account = await env.DB.prepare("SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE id = ?")
       .bind(account.id).first<AccountRow>();
   }
   return account?.firebase_uid === firebaseUid ? account : null;
@@ -460,9 +473,9 @@ async function passwordLogin(request: Request, env: Env): Promise<Response> {
 
   const now = Date.now();
   if (!(await rateLimitPair(env, request, email, "password-login", now, 40, 8))) return fail(429, "RATE_LIMITED");
-  const previous = await env.DB.prepare("SELECT id, email, firebase_uid, credential_version, display_name FROM accounts WHERE email = ?")
-    .bind(email).first<AccountRow>();
-  const startingVersion = previous?.credential_version ?? 0;
+  const emailSnapshot = await env.DB.prepare(
+    "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE email = ?",
+  ).bind(email).first<AccountRow>();
   const auth = await firebaseRequest(env, "accounts:signInWithPassword", {
     email,
     password,
@@ -476,16 +489,75 @@ async function passwordLogin(request: Request, env: Env): Promise<Response> {
   const firebaseEmail = normalizedEmail(auth.data.email);
   if (!firebaseUid || firebaseEmail !== email) return fail(401, "INVALID_CREDENTIALS");
 
-  // Do not link an unclaimed legacy account until the mailbox challenge has
-  // been consumed. Otherwise possession of only the Firebase password could
-  // disable its legacy email-code sign-in before the second factor succeeds.
-  await env.DB.prepare(
-    "INSERT INTO accounts (id, email, display_name, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(email) DO NOTHING",
-  ).bind(crypto.randomUUID(), email, defaultDisplayName(email), now).run();
-  const account = await env.DB.prepare("SELECT id, email, firebase_uid, credential_version, display_name FROM accounts WHERE email = ?")
-    .bind(email).first<AccountRow>();
-  if (!account || (account.credential_version ?? 0) !== startingVersion
-    || (account.firebase_uid && account.firebase_uid !== firebaseUid)) return fail(401, "INVALID_CREDENTIALS");
+  // Resolve by Firebase UID before considering a new email row. Firebase can
+  // already have accepted a verified email change while D1 still has the old
+  // address (including when Firebase's default action handler was used).
+  // Creating a placeholder at the new address first would split the stable
+  // D1 identity and make safe recovery impossible.
+  let account = await env.DB.prepare(
+    "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE firebase_uid = ?",
+  ).bind(firebaseUid).first<AccountRow>();
+  const emailOwner = await env.DB.prepare(
+    "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE email = ?",
+  ).bind(email).first<AccountRow>();
+  const targetReservation = await env.DB.prepare(
+    "SELECT account_id FROM pending_email_changes WHERE new_email = ?",
+  ).bind(email).first<{ account_id: string }>();
+  if (targetReservation && (!account || targetReservation.account_id !== account.id)) {
+    return fail(401, "INVALID_CREDENTIALS");
+  }
+  if (account) {
+    if (emailOwner && emailOwner.id !== account.id) return fail(401, "INVALID_CREDENTIALS");
+    if (emailSnapshot && emailSnapshot.id !== account.id) return fail(401, "INVALID_CREDENTIALS");
+    if (emailSnapshot && emailSnapshot.credential_version !== account.credential_version) return fail(401, "INVALID_CREDENTIALS");
+  } else {
+    if (emailOwner?.firebase_uid && emailOwner.firebase_uid !== firebaseUid) return fail(401, "INVALID_CREDENTIALS");
+    // Do not link an unclaimed legacy account until the mailbox challenge has
+    // been consumed. Otherwise password-only possession could disable its
+    // legacy email-code sign-in before the second factor succeeds.
+    await env.DB.prepare(
+      `INSERT INTO accounts (id, email, display_name, created_at)
+       SELECT ?, ?, ?, ? WHERE NOT EXISTS (
+         SELECT 1 FROM pending_email_changes WHERE new_email = ?
+       ) ON CONFLICT(email) DO NOTHING`,
+    ).bind(crypto.randomUUID(), email, defaultDisplayName(email), now, email).run();
+    account = await env.DB.prepare(
+      "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE email = ?",
+    ).bind(email).first<AccountRow>();
+    if (!account) return fail(401, "INVALID_CREDENTIALS");
+    if (account.firebase_uid && account.firebase_uid !== firebaseUid) return fail(401, "INVALID_CREDENTIALS");
+  }
+  const startingVersion = account.credential_version ?? 0;
+
+  // Revalidate the submitted password after resolving the UID. The first
+  // provider call is needed to discover an email-changed account's UID; this
+  // second call, followed by an unchanged-version check, closes a reset race
+  // that could otherwise bind an old successful login to a newer D1 version.
+  const confirmedAuth = await firebaseRequest(env, "accounts:signInWithPassword", {
+    email,
+    password,
+    returnSecureToken: true,
+  });
+  if (!confirmedAuth.ok) {
+    if (firebaseUnavailable(confirmedAuth)) return fail(503, "AUTH_PROVIDER_UNAVAILABLE");
+    return fail(401, "INVALID_CREDENTIALS");
+  }
+  if (confirmedAuth.data.localId !== firebaseUid || normalizedEmail(confirmedAuth.data.email) !== email) {
+    return fail(401, "INVALID_CREDENTIALS");
+  }
+  const confirmedAccount = account.firebase_uid
+    ? await env.DB.prepare(
+      "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE firebase_uid = ?",
+    ).bind(firebaseUid).first<AccountRow>()
+    : await env.DB.prepare(
+      "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE id = ?",
+    ).bind(account.id).first<AccountRow>();
+  if (!confirmedAccount || confirmedAccount.id !== account.id
+    || confirmedAccount.email !== account.email
+    || (confirmedAccount.credential_version ?? 0) !== startingVersion
+    || (confirmedAccount.firebase_uid && confirmedAccount.firebase_uid !== firebaseUid)) {
+    return fail(401, "INVALID_CREDENTIALS");
+  }
 
   const challengeId = randomHex(32);
   const tokenHash = await hmacHex(env.SESSION_PEPPER, `login-challenge:${challengeId}`);
@@ -493,11 +565,15 @@ async function passwordLogin(request: Request, env: Env): Promise<Response> {
   const codeHash = await hmacHex(env.AUTH_CODE_PEPPER, `${email}\0${challengeId}\0${code}`);
   const expiresAt = now + LOGIN_CHALLENGE_TTL_MS;
   await env.DB.prepare("DELETE FROM login_challenges WHERE account_id = ?").bind(account.id).run();
-  await env.DB.prepare(
+  const inserted = await env.DB.prepare(
     `INSERT INTO login_challenges
-      (token_hash, account_id, firebase_uid, code_hash, credential_version, expires_at, attempts, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
-  ).bind(tokenHash, account.id, firebaseUid, codeHash, startingVersion, expiresAt, now).run();
+      (token_hash, account_id, firebase_uid, code_hash, credential_version, expires_at, attempts, created_at, challenge_email)
+     SELECT ?, a.id, ?, ?, ?, ?, 0, ?, ? FROM accounts a
+     WHERE a.id = ? AND a.email = ? AND a.credential_version = ?
+       AND (a.firebase_uid IS NULL OR a.firebase_uid = ?)`,
+  ).bind(tokenHash, firebaseUid, codeHash, startingVersion, expiresAt, now, email,
+    account.id, account.email, startingVersion, firebaseUid).run();
+  if ((inserted.meta?.changes ?? 0) !== 1) return fail(401, "INVALID_CREDENTIALS");
   try {
     if (!(await sendCode(env, email, code))) {
       await env.DB.prepare("DELETE FROM login_challenges WHERE token_hash = ?").bind(tokenHash).run();
@@ -539,7 +615,7 @@ async function verifyPasswordLoginCode(request: Request, env: Env): Promise<Resp
     return fail(400, "INVALID_OR_EXPIRED_CODE");
   }
   const challenge = await env.DB.prepare(
-    `SELECT a.email, a.display_name, lc.code_hash FROM login_challenges lc
+    `SELECT lc.challenge_email AS email, lc.code_hash FROM login_challenges lc
      JOIN accounts a ON a.id = lc.account_id WHERE lc.token_hash = ?`,
   ).bind(tokenHash).first<{ email: string; code_hash: string }>();
   if (!challenge) return fail(400, "INVALID_OR_EXPIRED_CODE");
@@ -555,15 +631,16 @@ async function verifyPasswordLoginCode(request: Request, env: Env): Promise<Resp
   const consumed = await env.DB.prepare(
     `DELETE FROM login_challenges
      WHERE token_hash = ? AND code_hash = ? AND attempts = ? AND expires_at > ?
-     RETURNING account_id, firebase_uid, credential_version`,
+     RETURNING account_id, firebase_uid, credential_version, challenge_email`,
   ).bind(tokenHash, attempted.code_hash, attempted.attempts, now).first<{
     account_id: string;
     firebase_uid: string;
     credential_version: number;
+    challenge_email: string;
   }>();
   if (!consumed) return fail(400, "INVALID_OR_EXPIRED_CODE");
   let account = await env.DB.prepare(
-    "SELECT id, email, firebase_uid, credential_version, display_name FROM accounts WHERE id = ? AND credential_version = ?",
+    "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE id = ? AND credential_version = ?",
   ).bind(consumed.account_id, consumed.credential_version).first<AccountRow>();
   if (!account || (account.firebase_uid && account.firebase_uid !== consumed.firebase_uid)) {
     return fail(400, "INVALID_OR_EXPIRED_CODE");
@@ -574,17 +651,77 @@ async function verifyPasswordLoginCode(request: Request, env: Env): Promise<Resp
       `UPDATE OR IGNORE accounts SET firebase_uid = ?, credential_version = credential_version + 1
        WHERE id = ? AND credential_version = ? AND firebase_uid IS NULL`,
     ).bind(consumed.firebase_uid, account.id, consumed.credential_version).run();
-    await env.DB.prepare("DELETE FROM sessions WHERE account_id = ?").bind(account.id).run();
-    await env.DB.prepare("DELETE FROM login_challenges WHERE account_id = ?").bind(account.id).run();
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM sessions WHERE account_id = ?").bind(account.id),
+      env.DB.prepare("DELETE FROM login_challenges WHERE account_id = ?").bind(account.id),
+      env.DB.prepare("DELETE FROM browser_auth_requests WHERE account_id = ?").bind(account.id),
+    ]);
     account = await env.DB.prepare(
-      "SELECT id, email, firebase_uid, credential_version, display_name FROM accounts WHERE id = ? AND credential_version = ?",
+      "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE id = ? AND credential_version = ?",
     ).bind(account.id, linkedVersion).first<AccountRow>();
   } else if (account.credential_version !== consumed.credential_version) {
     return fail(400, "INVALID_OR_EXPIRED_CODE");
   }
   if (!account || account.firebase_uid !== consumed.firebase_uid) return fail(400, "INVALID_OR_EXPIRED_CODE");
+
+  const emailChange = await env.DB.prepare(
+    "SELECT old_email, new_email, status FROM pending_email_changes WHERE account_id = ?",
+  ).bind(account.id).first<{ old_email: string; new_email: string; status: string }>();
+  if (emailChange?.status === "applying" && consumed.challenge_email !== emailChange.new_email) {
+    // A mailbox challenge issued before the provider change was applied must
+    // not mint a session during the callback's invalidation/finalize window.
+    return fail(400, "INVALID_OR_EXPIRED_CODE");
+  }
+
+  // Firebase's action link may have changed the provider email before this
+  // mailbox challenge, either through our callback or Firebase's hosted
+  // handler (including recoverEmail). The just-consumed OTP proves control of
+  // that provider-verified address; update the same UID-bound D1 row and revoke
+  // every old session/grant in one D1 batch.
+  if (account.email !== consumed.challenge_email) {
+    const nextVersion = account.credential_version! + 1;
+    let reconciliation;
+    try {
+      reconciliation = await env.DB.batch([
+        env.DB.prepare(
+          `UPDATE accounts SET email = ?, credential_version = credential_version + 1
+           WHERE id = ? AND email = ? AND firebase_uid = ? AND credential_version = ?
+             AND NOT EXISTS (SELECT 1 FROM accounts other WHERE other.email = ? AND other.id <> ?)
+             AND NOT EXISTS (SELECT 1 FROM pending_email_changes p WHERE p.new_email = ? AND p.account_id <> ?)`
+        ).bind(consumed.challenge_email, account.id, account.email, consumed.firebase_uid,
+          account.credential_version, consumed.challenge_email, account.id, consumed.challenge_email, account.id),
+        env.DB.prepare(
+          `DELETE FROM sessions WHERE account_id = ? AND EXISTS (
+             SELECT 1 FROM accounts WHERE id = ? AND email = ? AND credential_version = ?
+           )`,
+        ).bind(account.id, account.id, consumed.challenge_email, nextVersion),
+        env.DB.prepare(
+          `DELETE FROM login_challenges WHERE account_id = ? AND EXISTS (
+             SELECT 1 FROM accounts WHERE id = ? AND email = ? AND credential_version = ?
+           )`,
+        ).bind(account.id, account.id, consumed.challenge_email, nextVersion),
+        env.DB.prepare(
+          `DELETE FROM browser_auth_requests WHERE account_id = ? AND EXISTS (
+             SELECT 1 FROM accounts WHERE id = ? AND email = ? AND credential_version = ?
+           )`,
+        ).bind(account.id, account.id, consumed.challenge_email, nextVersion),
+        env.DB.prepare(`DELETE FROM pending_email_changes WHERE account_id = ? AND EXISTS (
+          SELECT 1 FROM accounts WHERE id = ? AND email = ? AND credential_version = ?
+        )`).bind(account.id, account.id, consumed.challenge_email, nextVersion),
+      ]);
+    } catch {
+      return fail(409, "EMAIL_IN_USE");
+    }
+    if ((reconciliation[0]?.meta?.changes ?? 0) !== 1) return fail(409, "EMAIL_IN_USE");
+    account = await env.DB.prepare(
+      "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE id = ? AND credential_version = ?",
+    ).bind(account.id, nextVersion).first<AccountRow>();
+    if (!account || account.email !== consumed.challenge_email || account.firebase_uid !== consumed.firebase_uid) {
+      return fail(400, "INVALID_OR_EXPIRED_CODE");
+    }
+  }
   const session = await createSession(env, account, now);
-  return json({ ...session, account: { email: account.email, displayName: displayNameFor(account), hasPassword: true } });
+  return json({ ...session, account: publicAccount(account, true) });
 }
 
 async function requestPasswordEnrollmentCode(request: Request, env: Env): Promise<Response> {
@@ -729,7 +866,13 @@ async function enrollPassword(request: Request, env: Env): Promise<Response> {
        RETURNING email`,
     ).bind(tokenHash, email, leaseUntil, Date.now()).first<{ email: string }>();
     if (!consumed) return fail(400, "INVALID_OR_EXPIRED_SETUP");
-    return json({ passwordSet: true });
+    const session = await createSession(env, account, Date.now());
+    return json({
+      passwordSet: true,
+      enrolled: true,
+      ...session,
+      account: publicAccount(account, true),
+    });
   } catch {
     // Keep a retry path if Firebase accepted the password but D1 was briefly
     // unavailable. If release also fails, the short lease expires on its own.
@@ -797,6 +940,260 @@ async function completePasswordReset(request: Request, env: Env): Promise<Respon
   return json({ passwordChanged: true });
 }
 
+async function requestEmailChange(request: Request, env: Env): Promise<Response> {
+  const session = await authenticate(request, env);
+  if (!session) return fail(401, "SESSION_EXPIRED");
+  if (!session.firebase_uid) return fail(409, "PASSWORD_NOT_SET");
+  if (!(await rateLimitAccountAction(env, request, session, "email-change", Date.now(), 5))) return fail(429, "RATE_LIMITED");
+
+  const body = await requestJson(request);
+  const newEmail = normalizedEmail(body?.newEmail);
+  const currentPassword = body?.currentPassword;
+  if (!newEmail) return fail(400, "INVALID_EMAIL");
+  if (newEmail === session.email) return fail(400, "EMAIL_UNCHANGED");
+  if (!acceptablePassword(currentPassword)) return fail(401, "INVALID_CREDENTIALS");
+
+  const now = Date.now();
+  if (!(await rateLimitPair(env, request, newEmail, "email-change-request", now, 20, 5))) return fail(429, "RATE_LIMITED");
+  const account = await env.DB.prepare(
+    `SELECT id, email, firebase_uid, credential_version, display_name, created_at
+     FROM accounts WHERE id = ? AND email = ? AND firebase_uid = ? AND credential_version = ?`,
+  ).bind(session.id, session.email, session.firebase_uid, session.credential_version).first<AccountRow>();
+  if (!account) return fail(401, "SESSION_EXPIRED");
+
+  const reauthenticated = await firebaseRequest(env, "accounts:signInWithPassword", {
+    email: session.email,
+    password: currentPassword,
+    returnSecureToken: true,
+  });
+  if (!reauthenticated.ok) {
+    if (firebaseUnavailable(reauthenticated)) return fail(503, "AUTH_PROVIDER_UNAVAILABLE");
+    return fail(401, "INVALID_CREDENTIALS");
+  }
+  if (reauthenticated.data.localId !== session.firebase_uid
+    || normalizedEmail(reauthenticated.data.email) !== session.email
+    || typeof reauthenticated.data.idToken !== "string"
+    || reauthenticated.data.idToken.length < 20
+    || reauthenticated.data.idToken.length > 8192) return fail(401, "INVALID_CREDENTIALS");
+
+  const idToken = reauthenticated.data.idToken;
+  await env.DB.prepare("DELETE FROM pending_email_changes WHERE new_email = ? AND expires_at <= ?")
+    .bind(newEmail, now).run();
+  const emailOwner = await env.DB.prepare("SELECT id FROM accounts WHERE email = ?").bind(newEmail).first<{ id: string }>();
+  if (emailOwner && emailOwner.id !== session.id) return fail(409, "EMAIL_IN_USE");
+  const pending = await env.DB.prepare(
+    "SELECT account_id, expires_at FROM pending_email_changes WHERE account_id = ?",
+  ).bind(session.id).first<{ account_id: string; expires_at: number }>();
+  if (pending && pending.expires_at > now) return fail(409, "EMAIL_CHANGE_PENDING");
+  if (pending) {
+    await env.DB.prepare("DELETE FROM pending_email_changes WHERE account_id = ? AND expires_at <= ?")
+      .bind(session.id, now).run();
+  }
+  const expiresAt = now + EMAIL_CHANGE_TTL_MS;
+  const intent = await env.DB.prepare(
+    `INSERT INTO pending_email_changes
+      (account_id, old_email, new_email, firebase_uid, credential_version, expires_at, created_at)
+     SELECT ?, ?, ?, ?, ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM accounts WHERE id = ? AND email = ? AND firebase_uid = ? AND credential_version = ?
+     )`,
+  ).bind(session.id, session.email, newEmail, session.firebase_uid, session.credential_version, expiresAt, now,
+    session.id, session.email, session.firebase_uid, session.credential_version).run();
+  if ((intent.meta?.changes ?? 0) !== 1) return fail(409, "EMAIL_CHANGE_PENDING");
+
+  const sent = await firebaseRequest(env, "accounts:sendOobCode", {
+    requestType: "VERIFY_AND_CHANGE_EMAIL",
+    idToken,
+    newEmail,
+  });
+  if (!sent.ok && sent.errorCode === "EMAIL_EXISTS") {
+    await env.DB.prepare("DELETE FROM pending_email_changes WHERE account_id = ? AND new_email = ?")
+      .bind(session.id, newEmail).run();
+    return fail(409, "EMAIL_IN_USE");
+  }
+  if (!sent.ok && sent.errorCode !== "NETWORK_ERROR" && sent.status < 500) {
+    await env.DB.prepare("DELETE FROM pending_email_changes WHERE account_id = ? AND new_email = ?")
+      .bind(session.id, newEmail).run();
+    if (sent.errorCode === "INVALID_EMAIL") return fail(400, "INVALID_EMAIL");
+    if (sent.errorCode === "INVALID_ID_TOKEN" || sent.errorCode === "TOKEN_EXPIRED") return fail(401, "INVALID_CREDENTIALS");
+    return fail(503, "AUTH_PROVIDER_UNAVAILABLE");
+  }
+  if (!sent.ok) return fail(503, "AUTH_PROVIDER_UNAVAILABLE");
+  // Firebase ID tokens and action codes stay in this request only and are
+  // never returned or persisted. The pending table contains only the account
+  // binding and target address needed to reconcile the later verified link.
+  return json({ requested: true }, 202);
+}
+
+async function completeEmailChange(request: Request, env: Env): Promise<Response> {
+  const body = await requestJson(request);
+  const oobCode = typeof body?.oobCode === "string" ? body.oobCode.trim() : "";
+  if (!/^\S{10,4096}$/.test(oobCode)) return fail(400, "INVALID_OR_EXPIRED_EMAIL_CHANGE");
+
+  const now = Date.now();
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  const ipBucket = await hmacHex(env.AUTH_CODE_PEPPER, ip);
+  await env.DB.prepare("DELETE FROM rate_limits WHERE window_started_at < ?").bind(now - 24 * 60 * 60 * 1000).run();
+  if (!(await enforceRateLimit(env, `email-change-complete-ip:${ipBucket}`, now, 60 * 60 * 1000, 20))) {
+    return fail(429, "RATE_LIMITED");
+  }
+
+  // resetPassword with only oobCode inspects code purpose without consuming it;
+  // only accounts:update can apply VERIFY_AND_CHANGE_EMAIL.
+  const inspected = await firebaseRequest(env, "accounts:resetPassword", { oobCode });
+  if (!inspected.ok) {
+    if (firebaseUnavailable(inspected)) return fail(503, "AUTH_PROVIDER_UNAVAILABLE");
+    return fail(400, "INVALID_OR_EXPIRED_EMAIL_CHANGE");
+  }
+  if (inspected.data.requestType !== "VERIFY_AND_CHANGE_EMAIL") return fail(400, "INVALID_OR_EXPIRED_EMAIL_CHANGE");
+  const oldEmail = normalizedEmail(inspected.data.email);
+  const newEmail = normalizedEmail(inspected.data.newEmail);
+  if (!oldEmail || !newEmail || oldEmail === newEmail) return fail(400, "INVALID_OR_EXPIRED_EMAIL_CHANGE");
+
+  const pending = await env.DB.prepare(
+    `SELECT p.account_id, p.old_email, p.new_email, p.firebase_uid, p.credential_version,
+       p.status, p.processing_until, a.id, a.email, a.firebase_uid AS account_firebase_uid,
+       a.credential_version AS account_credential_version, a.display_name, a.created_at
+     FROM pending_email_changes p JOIN accounts a ON a.id = p.account_id
+     WHERE p.old_email = ? AND p.new_email = ? AND p.expires_at > ?
+       AND a.email = p.old_email AND a.firebase_uid = p.firebase_uid
+       AND a.credential_version = p.credential_version`,
+  ).bind(oldEmail, newEmail, now).first<{
+    account_id: string;
+    old_email: string;
+    new_email: string;
+    firebase_uid: string;
+    credential_version: number;
+    status: string;
+    processing_until: number | null;
+    id: string;
+    email: string;
+    account_firebase_uid: string;
+    account_credential_version: number;
+    display_name: string | null;
+    created_at: number;
+  }>();
+  if (!pending) return fail(400, "INVALID_OR_EXPIRED_EMAIL_CHANGE");
+  if (pending.status === "applying" && pending.processing_until !== null && pending.processing_until > now) {
+    return fail(409, "EMAIL_CHANGE_PENDING");
+  }
+  const emailOwner = await env.DB.prepare("SELECT id FROM accounts WHERE email = ?").bind(newEmail).first<{ id: string }>();
+  if (emailOwner && emailOwner.id !== pending.account_id) return fail(409, "EMAIL_IN_USE");
+
+  // Revoke all pre-change sessions and grants before asking Firebase to consume
+  // the one-use action code. A provider success followed by D1 failure must
+  // not leave old TomoNode credentials usable. The intent version and short
+  // lease advance in the same D1 transaction to serialize duplicate callbacks.
+  const priorVersion = pending.credential_version;
+  const nextVersion = priorVersion + 1;
+  const processingUntil = now + 2 * 60 * 1000;
+  let invalidation;
+  try {
+    invalidation = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE accounts SET credential_version = credential_version + 1
+         WHERE id = ? AND email = ? AND firebase_uid = ? AND credential_version = ?
+           AND EXISTS (
+             SELECT 1 FROM pending_email_changes p WHERE p.account_id = accounts.id
+               AND p.old_email = ? AND p.new_email = ? AND p.firebase_uid = ?
+               AND p.credential_version = ? AND p.expires_at > ?
+               AND (p.status = 'pending' OR (p.status = 'applying' AND p.processing_until <= ?))
+           )`,
+      ).bind(pending.account_id, oldEmail, pending.firebase_uid, priorVersion,
+        oldEmail, newEmail, pending.firebase_uid, priorVersion, now, now),
+      env.DB.prepare(
+        `UPDATE pending_email_changes SET credential_version = ?, status = 'applying', processing_until = ?
+         WHERE account_id = ? AND old_email = ? AND new_email = ? AND firebase_uid = ?
+           AND credential_version = ? AND expires_at > ?
+           AND (status = 'pending' OR (status = 'applying' AND processing_until <= ?))
+           AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = pending_email_changes.account_id
+             AND a.email = pending_email_changes.old_email AND a.firebase_uid = pending_email_changes.firebase_uid
+             AND a.credential_version = ?)`,
+      ).bind(nextVersion, processingUntil, pending.account_id, oldEmail, newEmail,
+        pending.firebase_uid, priorVersion, now, now, nextVersion),
+      ...["sessions", "login_challenges", "browser_auth_requests"].map((table) => env.DB.prepare(
+        `DELETE FROM ${table} WHERE account_id = ? AND EXISTS (
+           SELECT 1 FROM accounts a JOIN pending_email_changes p ON p.account_id = a.id
+           WHERE a.id = ? AND a.credential_version = ? AND p.credential_version = ?
+             AND p.status = 'applying' AND p.processing_until = ?
+         )`,
+      ).bind(pending.account_id, pending.account_id, nextVersion, nextVersion, processingUntil)),
+    ]);
+  } catch {
+    return fail(503, "SERVICE_UNAVAILABLE");
+  }
+  if ((invalidation[0]?.meta?.changes ?? 0) !== 1 || (invalidation[1]?.meta?.changes ?? 0) !== 1) {
+    return fail(409, "EMAIL_CHANGE_PENDING");
+  }
+
+  const applied = await firebaseRequest(env, "accounts:update", { oobCode });
+  if (!applied.ok) {
+    if (firebaseUnavailable(applied)) return fail(503, "AUTH_PROVIDER_UNAVAILABLE");
+    await env.DB.prepare(
+      `UPDATE pending_email_changes SET status = 'pending', processing_until = NULL
+       WHERE account_id = ? AND old_email = ? AND new_email = ?
+         AND credential_version = ? AND status = 'applying' AND processing_until = ?`,
+    ).bind(pending.account_id, oldEmail, newEmail, nextVersion, processingUntil).run();
+    return fail(400, "INVALID_OR_EXPIRED_EMAIL_CHANGE");
+  }
+  // The Identity Toolkit applyActionCode contract returns an empty object; if
+  // this provider version includes identity fields, fail closed on a mismatch.
+  if ((typeof applied.data.localId === "string" && applied.data.localId !== pending.firebase_uid)
+    || (typeof applied.data.email === "string" && normalizedEmail(applied.data.email) !== newEmail)) {
+    return fail(503, "AUTH_PROVIDER_UNAVAILABLE");
+  }
+
+  let result;
+  try {
+    result = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE accounts SET email = ?
+         WHERE id = ? AND email = ? AND firebase_uid = ? AND credential_version = ?
+           AND EXISTS (
+             SELECT 1 FROM pending_email_changes p WHERE p.account_id = accounts.id
+               AND p.old_email = ? AND p.new_email = ? AND p.firebase_uid = ?
+               AND p.credential_version = ? AND p.expires_at > ?
+               AND p.status = 'applying' AND p.processing_until = ?
+           )
+           AND NOT EXISTS (SELECT 1 FROM accounts other WHERE other.email = ? AND other.id <> accounts.id)`,
+      ).bind(newEmail, pending.account_id, oldEmail, pending.firebase_uid, nextVersion,
+        oldEmail, newEmail, pending.firebase_uid, nextVersion, now, processingUntil, newEmail),
+      env.DB.prepare(
+        `DELETE FROM sessions WHERE account_id = ? AND EXISTS (
+           SELECT 1 FROM accounts WHERE id = ? AND email = ? AND credential_version = ?
+         )`,
+        ).bind(pending.account_id, pending.account_id, newEmail, nextVersion),
+      env.DB.prepare(
+        `DELETE FROM login_challenges WHERE account_id = ? AND EXISTS (
+           SELECT 1 FROM accounts WHERE id = ? AND email = ? AND credential_version = ?
+         )`,
+        ).bind(pending.account_id, pending.account_id, newEmail, nextVersion),
+      env.DB.prepare(
+        `DELETE FROM browser_auth_requests WHERE account_id = ? AND EXISTS (
+           SELECT 1 FROM accounts WHERE id = ? AND email = ? AND credential_version = ?
+         )`,
+        ).bind(pending.account_id, pending.account_id, newEmail, nextVersion),
+      env.DB.prepare(`DELETE FROM pending_email_changes WHERE account_id = ? AND old_email = ? AND new_email = ?
+        AND credential_version = ? AND status = 'applying' AND processing_until = ?
+        AND EXISTS (SELECT 1 FROM accounts a WHERE a.id = pending_email_changes.account_id
+          AND a.email = ? AND a.credential_version = ?)`)
+        .bind(pending.account_id, oldEmail, newEmail, nextVersion, processingUntil, newEmail, nextVersion),
+    ]);
+  } catch {
+    // Firebase may have applied the one-use code before D1 became unavailable.
+    // Recovery is the password + OTP UID-reconciliation path; never issue a
+    // TomoNode session from this unauthenticated callback.
+    return fail(503, "SERVICE_UNAVAILABLE");
+  }
+  if ((result[0]?.meta?.changes ?? 0) !== 1) return fail(409, "EMAIL_CHANGE_CONFLICT");
+  const updated = await env.DB.prepare(
+    `SELECT id, email, firebase_uid, credential_version, display_name, created_at
+     FROM accounts WHERE id = ? AND email = ? AND credential_version = ?`,
+  ).bind(pending.account_id, newEmail, nextVersion).first<AccountRow>();
+  if (!updated || updated.firebase_uid !== pending.firebase_uid) return fail(503, "SERVICE_UNAVAILABLE");
+  return json({ emailChanged: true, account: publicAccount(updated, true) });
+}
+
 function accountPageCorsMethods(pathname: string): string | null {
   const postPaths = new Set([
     "/v1/auth/password/login",
@@ -806,7 +1203,9 @@ function accountPageCorsMethods(pathname: string): string | null {
     "/v1/auth/password/enroll",
     "/v1/auth/password/request-reset",
     "/v1/auth/password/complete-reset",
+    "/v1/auth/email-change/complete",
     "/v1/me/password-reset",
+    "/v1/account/email-change/request",
     "/v1/auth/logout",
     "/v1/auth/browser/approve",
   ]);
@@ -936,14 +1335,15 @@ async function approveBrowserAuth(request: Request, env: Env): Promise<Response>
   const now = Date.now();
   const tokenHash = await hmacHex(env.SESSION_PEPPER, token);
   const session = await env.DB.prepare(
-    `SELECT s.token_hash, s.created_at, s.credential_version AS session_credential_version, a.id, a.email,
-       a.firebase_uid, a.credential_version, a.display_name
+    `SELECT s.token_hash, s.created_at AS session_created_at,
+       s.credential_version AS session_credential_version, a.id, a.email,
+       a.firebase_uid, a.credential_version, a.display_name, a.created_at
      FROM sessions s JOIN accounts a ON a.id = s.account_id
      WHERE s.token_hash = ? AND s.expires_at > ?`,
-  ).bind(tokenHash, now).first<SessionRow & { created_at: number }>();
+  ).bind(tokenHash, now).first<SessionRow>();
   if (!session || session.credential_version !== session.session_credential_version
-    || !session.firebase_uid || session.created_at > now
-    || now - session.created_at > 10 * 60 * 1000) return fail(401, "RECENT_PASSWORD_LOGIN_REQUIRED");
+    || !session.firebase_uid || session.session_created_at === undefined || session.session_created_at > now
+    || now - session.session_created_at > 10 * 60 * 1000) return fail(401, "RECENT_PASSWORD_LOGIN_REQUIRED");
 
   const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
   const [ipHash, accountHash, codeHash] = await Promise.all([
@@ -1003,7 +1403,7 @@ async function pollBrowserAuth(request: Request, env: Env): Promise<Response> {
   if (row.status !== "approved" || !row.account_id || row.credential_version === null) return fail(410, "BROWSER_AUTH_EXPIRED");
 
   const account = await env.DB.prepare(
-    "SELECT id, email, firebase_uid, credential_version, display_name FROM accounts WHERE id = ? AND credential_version = ?",
+    "SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE id = ? AND credential_version = ?",
   ).bind(row.account_id, row.credential_version).first<AccountRow>();
   if (!account || !account.firebase_uid) {
     await env.DB.prepare("DELETE FROM browser_auth_requests WHERE request_id = ?").bind(row.request_id).run();
@@ -1034,7 +1434,7 @@ async function pollBrowserAuth(request: Request, env: Env): Promise<Response> {
     status: "complete",
     accessToken,
     expiresAt,
-    account: { email: account.email, displayName: displayNameFor(account), hasPassword: true },
+    account: publicAccount(account, true),
   });
 }
 
@@ -1087,9 +1487,16 @@ async function verifyCode(request: Request, env: Env): Promise<Response> {
   ).bind(email, attempted.code_hash, attempted.attempts).first<{ email: string }>();
   if (!consumed) return fail(400, "INVALID_OR_EXPIRED_CODE");
 
-  await env.DB.prepare("INSERT INTO accounts (id, email, display_name, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(email) DO NOTHING")
-    .bind(crypto.randomUUID(), email, defaultDisplayName(email), now).run();
-  const account = await env.DB.prepare("SELECT id, email, firebase_uid, credential_version, display_name FROM accounts WHERE email = ?")
+  await env.DB.prepare(
+    `INSERT INTO accounts (id, email, display_name, created_at)
+     SELECT ?, ?, ?, ? WHERE NOT EXISTS (
+       SELECT 1 FROM pending_email_changes WHERE new_email = ?
+     ) ON CONFLICT(email) DO NOTHING`,
+  ).bind(crypto.randomUUID(), email, defaultDisplayName(email), now, email).run();
+  const reservedEmail = await env.DB.prepare("SELECT account_id FROM pending_email_changes WHERE new_email = ?")
+    .bind(email).first<{ account_id: string }>();
+  if (reservedEmail) return fail(400, "INVALID_OR_EXPIRED_CODE");
+  const account = await env.DB.prepare("SELECT id, email, firebase_uid, credential_version, display_name, created_at FROM accounts WHERE email = ?")
     .bind(email).first<AccountRow>();
   if (!account) return fail(500, "ACCOUNT_UNAVAILABLE");
 
@@ -1099,7 +1506,7 @@ async function verifyCode(request: Request, env: Env): Promise<Response> {
   if (account.firebase_uid) return fail(400, "INVALID_OR_EXPIRED_CODE");
 
   const session = await createSession(env, account, now);
-  return json({ ...session, account: { email: account.email, displayName: displayNameFor(account), hasPassword: false } });
+  return json({ ...session, account: publicAccount(account, false) });
 }
 
 async function authenticate(request: Request, env: Env): Promise<SessionRow | null> {
@@ -1109,7 +1516,7 @@ async function authenticate(request: Request, env: Env): Promise<SessionRow | nu
   const now = Date.now();
   const session = await env.DB.prepare(
     `SELECT s.token_hash, s.credential_version AS session_credential_version,
-       a.id, a.email, a.firebase_uid, a.credential_version, a.display_name
+       a.id, a.email, a.firebase_uid, a.credential_version, a.display_name, a.created_at
      FROM sessions s JOIN accounts a ON a.id = s.account_id
      WHERE s.token_hash = ? AND s.expires_at > ?`,
   ).bind(tokenHash, now).first<SessionRow>();
@@ -1124,7 +1531,7 @@ async function authenticate(request: Request, env: Env): Promise<SessionRow | nu
 async function currentAccount(request: Request, env: Env): Promise<Response> {
   const session = await authenticate(request, env);
   if (!session) return fail(401, "SESSION_EXPIRED");
-  return json({ email: session.email, displayName: displayNameFor(session), hasPassword: Boolean(session.firebase_uid) });
+  return json(publicAccount(session));
 }
 
 async function updateDisplayName(request: Request, env: Env): Promise<Response> {
@@ -1136,7 +1543,7 @@ async function updateDisplayName(request: Request, env: Env): Promise<Response> 
   if (!displayName) return fail(400, "INVALID_DISPLAY_NAME");
   await env.DB.prepare("UPDATE accounts SET display_name = ? WHERE id = ?")
     .bind(displayName, session.id).run();
-  return json({ email: session.email, displayName, hasPassword: Boolean(session.firebase_uid) });
+  return json({ userId: session.id, email: session.email, createdAt: session.created_at, displayName, hasPassword: Boolean(session.firebase_uid) });
 }
 
 async function requestPasswordChange(request: Request, env: Env): Promise<Response> {
@@ -1238,6 +1645,10 @@ export async function fetchHandler(request: Request, env: Env): Promise<Response
       response = await requestPasswordReset(request, env);
     } else if (request.method === "POST" && url.pathname === "/v1/auth/password/complete-reset") {
       response = await completePasswordReset(request, env);
+    } else if (request.method === "POST" && url.pathname === "/v1/account/email-change/request") {
+      response = await requestEmailChange(request, env);
+    } else if (request.method === "POST" && url.pathname === "/v1/auth/email-change/complete") {
+      response = await completeEmailChange(request, env);
     } else if (request.method === "POST" && url.pathname === "/v1/auth/browser/start") {
       response = await startBrowserAuth(request, env);
     } else if (request.method === "GET" && url.pathname === "/v1/auth/browser/request") {

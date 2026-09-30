@@ -9,6 +9,7 @@ type FakeAccount = {
   firebase_uid: string | null;
   credential_version: number;
   display_name?: string;
+  created_at?: number;
   avatarData?: Uint8Array | null;
   avatarMime?: string | null;
   avatarUpdatedAt?: number | null;
@@ -158,7 +159,7 @@ class FakeAccountDatabase {
       const row = this.loginChallenges.get(tokenHash);
       if (!row || row.codeHash !== values[1] || row.attempts !== Number(values[2]) || row.expiresAt <= Number(values[3])) return null;
       this.loginChallenges.delete(tokenHash);
-      return { account_id: row.accountId, firebase_uid: row.firebaseUid, credential_version: row.credentialVersion } as T;
+      return { account_id: row.accountId, firebase_uid: row.firebaseUid, credential_version: row.credentialVersion, challenge_email: row.email } as T;
     }
     if (sql.includes("UPDATE password_enrollment_codes SET attempts = attempts + 1")) {
       const email = String(values[0]);
@@ -197,6 +198,9 @@ class FakeAccountDatabase {
     if (sql.includes("SELECT id, email, firebase_uid, credential_version") && sql.includes("WHERE email = ?")) {
       return (this.accounts.get(String(values[0])) ?? null) as T | null;
     }
+    if (sql.includes("SELECT id, email, firebase_uid, credential_version") && sql.includes("WHERE firebase_uid = ?")) {
+      return ([...this.accounts.values()].find((row) => row.firebase_uid === values[0]) ?? null) as T | null;
+    }
     if (sql.includes("SELECT id, email, firebase_uid, credential_version") && sql.includes("WHERE id = ? AND credential_version = ?")) {
       const account = [...this.accounts.values()].find((row) => row.id === values[0] && row.credential_version === Number(values[1]));
       return (account ?? null) as T | null;
@@ -228,7 +232,8 @@ class FakeAccountDatabase {
       const account = [...this.accounts.values()].find((entry) => entry.id === session.accountId);
       return account ? {
         token_hash: tokenHash,
-        created_at: session.createdAt,
+        created_at: account.created_at,
+        session_created_at: session.createdAt,
         session_credential_version: session.credentialVersion,
         id: account.id,
         email: account.email,
@@ -245,8 +250,10 @@ class FakeAccountDatabase {
     if (sql.includes("INSERT INTO email_codes")) {
       this.emailCodes.set(String(values[0]), { codeHash: String(values[1]), expiresAt: Number(values[2]), attempts: 0 });
     } else if (sql.includes("INSERT INTO login_challenges")) {
-      const [tokenHash, accountId, firebaseUid, codeHash, credentialVersion, expiresAt, createdAt] = values;
+      const [tokenHash, firebaseUid, codeHash, credentialVersion, expiresAt, createdAt, email, accountId, expectedEmail, expectedVersion, expectedUid] = values;
       const account = [...this.accounts.values()].find((row) => row.id === accountId);
+      if (!account || account.email !== expectedEmail || account.credential_version !== expectedVersion
+        || (account.firebase_uid !== null && account.firebase_uid !== expectedUid)) return { success: true, meta: { changes: 0 } };
       this.loginChallenges.set(String(tokenHash), {
         accountId: String(accountId),
         firebaseUid: String(firebaseUid),
@@ -254,7 +261,7 @@ class FakeAccountDatabase {
         credentialVersion: Number(credentialVersion),
         expiresAt: Number(expiresAt),
         attempts: 0,
-        email: account?.email ?? "",
+        email: String(email),
       });
       void createdAt;
     } else if (sql.includes("INSERT INTO password_enrollment_codes")) {
@@ -289,6 +296,7 @@ class FakeAccountDatabase {
           firebase_uid: isFirebaseInsert ? String(values[2]) : null,
           credential_version: isFirebaseInsert ? 1 : 0,
           display_name: isFirebaseInsert ? String(values[3]) : String(values[2]),
+          created_at: Number(values[isFirebaseInsert ? 4 : 3]),
         });
       }
     } else if (sql.includes("UPDATE OR IGNORE accounts SET firebase_uid")) {
@@ -563,13 +571,13 @@ describe("TomoNode account API routes", () => {
       expect(verified.status, JSON.stringify(await verified.clone().json())).toBe(200);
       const session = await verified.json() as { accessToken: string; account: { email: string; hasPassword: boolean } };
       expect(session.accessToken).toMatch(/^[a-f0-9]{64}$/);
-      expect(session.account).toEqual({ email: "owner@example.com", displayName: "owner", hasPassword: false });
+      expect(session.account).toMatchObject({ email: "owner@example.com", displayName: "owner", hasPassword: false });
 
       const authenticated = await fetchHandler(new Request("https://account-api.tomonode.site/v1/me", {
         headers: { authorization: `Bearer ${session.accessToken}` },
       }), env);
       expect(authenticated.status).toBe(200);
-      await expect(authenticated.json()).resolves.toEqual({ email: "owner@example.com", displayName: "owner", hasPassword: false });
+      await expect(authenticated.json()).resolves.toMatchObject({ email: "owner@example.com", displayName: "owner", hasPassword: false });
 
       const logout = await fetchHandler(new Request("https://account-api.tomonode.site/v1/auth/logout", {
         method: "POST",
@@ -670,7 +678,7 @@ describe("TomoNode account API routes", () => {
       expect(challenge.expiresInSeconds).toBe(600);
       expect(JSON.stringify(challenge)).not.toContain("provider-id-token");
       expect(JSON.stringify(challenge)).not.toContain("provider-refresh-token");
-      expect(firebaseCalls).toBe(1);
+      expect(firebaseCalls).toBe(2);
       expect(resendCalls).toBe(1);
       expect(database.loginChallenges.size).toBe(1);
       expect(database.accounts.get("owner@example.com")?.firebase_uid).toBeNull();
@@ -683,7 +691,7 @@ describe("TomoNode account API routes", () => {
       expect(verified.status, JSON.stringify(await verified.clone().json())).toBe(200);
       const session = await verified.json() as { accessToken: string; account: { email: string; hasPassword: boolean } };
       expect(session.accessToken).toMatch(/^[a-f0-9]{64}$/);
-      expect(session.account).toEqual({ email: "owner@example.com", displayName: "owner", hasPassword: true });
+      expect(session.account).toMatchObject({ email: "owner@example.com", displayName: "owner", hasPassword: true });
       expect(JSON.stringify(session)).not.toContain("provider-id-token");
       expect(JSON.stringify(session)).not.toContain("provider-refresh-token");
       expect(database.loginChallenges.size).toBe(0);
@@ -736,7 +744,7 @@ describe("TomoNode account API routes", () => {
     }
   });
 
-  it("uses a purpose-bound, single-use email proof for initial password enrollment without signing in", async () => {
+  it("uses a purpose-bound, single-use email proof for enrollment and signs in without a second OTP", async () => {
     const { env, database } = makeEnv();
     const originalFetch = globalThis.fetch;
     const minimumPassword = "🔒".repeat(6);
@@ -791,9 +799,9 @@ describe("TomoNode account API routes", () => {
       }), env);
       expect(enrolled.status).toBe(200);
       const enrollmentResponse = await enrolled.json();
-      expect(enrollmentResponse).toEqual({ passwordSet: true });
+      expect(enrollmentResponse).toMatchObject({ passwordSet: true, enrolled: true, accessToken: expect.stringMatching(/^[a-f0-9]{64}$/), account: { email: "first@example.com", hasPassword: true, userId: expect.any(String), createdAt: expect.any(Number) } });
       expect(database.accounts.get("first@example.com")?.firebase_uid).toBe("firebase-first@example.com");
-      expect(database.sessions.size).toBe(0);
+      expect(database.sessions.size).toBe(1);
       expect(JSON.stringify(enrollmentResponse)).not.toContain("provider-id-token");
 
       const replay = await fetchHandler(post("/v1/auth/password/enroll", {
@@ -884,12 +892,12 @@ describe("TomoNode account API routes", () => {
       }), env);
       expect(recovered.status).toBe(200);
       const recoveryResponse = await recovered.json();
-      expect(recoveryResponse).toEqual({ passwordSet: true });
+      expect(recoveryResponse).toMatchObject({ passwordSet: true, enrolled: true, accessToken: expect.stringMatching(/^[a-f0-9]{64}$/) });
       expect(signupCalls).toBe(2);
       expect(recoverySigninCalls).toBe(1);
       expect(database.accounts.get("legacy@example.com")?.firebase_uid).toBe("firebase-legacy-user");
       expect(database.accounts.get("legacy@example.com")?.credential_version).toBe(1);
-      expect(database.sessions.size).toBe(0);
+      expect(database.sessions.size).toBe(1);
       expect(database.setupProofs.size).toBe(0);
       expect(JSON.stringify(recoveryResponse)).not.toContain("recovery-id-token");
       expect((await fetchHandler(authenticated("/v1/me", "GET", legacySessionToken), env)).status).toBe(401);
@@ -1143,7 +1151,7 @@ describe("TomoNode account API routes", () => {
       expiresAt: number;
       account: { email: string; displayName: string; hasPassword: boolean };
     };
-    expect(completion).toEqual({
+    expect(completion).toMatchObject({
       status: "complete",
       accessToken: expect.stringMatching(/^[a-f0-9]{64}$/),
       expiresAt: expect.any(Number),
@@ -1255,7 +1263,7 @@ describe("TomoNode account API routes", () => {
       displayName: "  Rafa 🌙  ",
     }), env);
     expect(updated.status).toBe(200);
-    await expect(updated.json()).resolves.toEqual({
+    await expect(updated.json()).resolves.toMatchObject({
       email: "owner@example.com",
       displayName: "Rafa 🌙",
       hasPassword: true,

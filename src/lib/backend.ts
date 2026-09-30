@@ -317,6 +317,7 @@ export const backend = {
   accountEnrollPassword: (email: string, setupToken: string, password: string) => desktopOr<void>("account_enroll_password", { apiBaseUrl: ACCOUNT_API_BASE_URL, email, setupToken, password }, () => Promise.reject(new Error("アカウント登録はインストール版Windowsアプリで利用できます"))),
   accountRequestPasswordReset: (email?: string) => desktopOr<void>("account_request_password_reset", { apiBaseUrl: ACCOUNT_API_BASE_URL, email: email ?? null }, () => Promise.reject(new Error("パスワード再設定はインストール版Windowsアプリで利用できます"))),
   accountUpdateDisplayName: (displayName: string) => desktopOr<AccountProfile>("account_update_display_name", { apiBaseUrl: ACCOUNT_API_BASE_URL, displayName }, () => Promise.reject(new Error("表示名の変更はインストール版Windowsアプリで利用できます"))),
+  accountRequestEmailChange: (newEmail: string, currentPassword: string) => desktopOr<void>("account_request_email_change", { apiBaseUrl: ACCOUNT_API_BASE_URL, newEmail, currentPassword }, () => Promise.reject(new Error("メールアドレスの変更はインストール版Windowsアプリで利用できます"))),
   accountUploadAvatar: (mimeType: AccountAvatarMimeType, dataBase64: string) => desktopOr<void>("account_upload_avatar", { apiBaseUrl: ACCOUNT_API_BASE_URL, mimeType, dataBase64 }, () => Promise.reject(new Error("プロフィール画像の変更はインストール版Windowsアプリで利用できます"))),
   accountRemoveAvatar: () => desktopOr<void>("account_remove_avatar", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => Promise.reject(new Error("プロフィール画像の変更はインストール版Windowsアプリで利用できます"))),
   accountLogout: () => desktopOr<void>("account_logout", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => undefined),

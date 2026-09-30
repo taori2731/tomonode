@@ -12,6 +12,7 @@ class SqliteD1 {
       "../migrations/0001_initial.sql",
       "../migrations/0002_password_auth.sql",
       "../migrations/0003_browser_auth.sql",
+      "../migrations/0004_email_change_and_identity.sql",
     ]) {
       this.sqlite.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
     }
@@ -49,6 +50,144 @@ class SqliteD1 {
   close() {
     this.sqlite.close();
   }
+}
+
+async function emailFixture() {
+  const DB = new SqliteD1();
+  const env = { DB, RESEND_API_KEY: "test", RESEND_FROM: "accounts@example.test", AUTH_CODE_PEPPER: "test-auth", SESSION_PEPPER: "test-session", FIREBASE_API_KEY: "test", APP_BASE_URL: "https://tomonode.site" };
+  const token = "e".repeat(64);
+  const createdAt = Date.UTC(2025, 0, 2);
+  const now = Date.now();
+  DB.sqlite.prepare(`INSERT INTO accounts (id,email,firebase_uid,credential_version,display_name,created_at,stripe_customer_id,avatar_data,avatar_mime,avatar_updated_at)
+    VALUES ('stable-id','old@example.test','stable-uid',0,'Original Name',?,'customer-id',?,'image/png',?)`).run(createdAt, new Uint8Array([1,2,3]), now);
+  DB.sqlite.prepare("INSERT INTO sessions (token_hash,account_id,expires_at,created_at,last_used_at,credential_version) VALUES (?,'stable-id',?,?,?,0)").run(await hmacHex(env.SESSION_PEPPER, token), now + 600000, now, now);
+  DB.sqlite.prepare("INSERT INTO subscriptions (stripe_subscription_id,account_id,status,updated_at) VALUES ('subscription-id','stable-id','active',?)").run(now);
+  return { DB, env, token, createdAt };
+}
+
+function emailProvider(t, options = {}) {
+  const calls = [];
+  let applied = false;
+  let otp = "";
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    const body = JSON.parse(init.body);
+    const endpoint = String(url).split("/").at(-1).split("?")[0];
+    calls.push(endpoint);
+    if (String(url) === "https://api.resend.com/emails") {
+      otp = body.text.match(/\d{6}/)[0];
+      return Response.json({ id: "test-mail" });
+    }
+    if (endpoint === "accounts:signInWithPassword") {
+      if (options.badPassword) return Response.json({ error: { message: "INVALID_LOGIN_CREDENTIALS" } }, { status: 400 });
+      return Response.json({ localId: "stable-uid", email: applied ? "new@example.test" : "old@example.test", idToken: "ephemeral-provider-token-not-returned" });
+    }
+    if (endpoint === "accounts:sendOobCode") {
+      assert.equal(body.requestType, "VERIFY_AND_CHANGE_EMAIL");
+      assert.equal(body.newEmail, "new@example.test");
+      return Response.json({});
+    }
+    if (endpoint === "accounts:resetPassword") return Response.json(applied
+      ? { error: { message: "INVALID_OOB_CODE" } }
+      : { requestType: options.purpose ?? "VERIFY_AND_CHANGE_EMAIL", email: "old@example.test", newEmail: "new@example.test" }, { status: applied ? 400 : 200 });
+    if (endpoint === "accounts:update") {
+      await options.beforeApply?.();
+      if (options.providerUnavailable) return Response.json({}, { status: 503 });
+      applied = true;
+      options.afterApply?.();
+      return Response.json({});
+    }
+    throw new Error(`Unexpected endpoint ${endpoint}`);
+  });
+  return { calls, get applied() { return applied; }, get otp() { return otp; } };
+}
+
+async function requestNewEmail(env, token) {
+  return fetchHandler(post("/v1/account/email-change/request", { newEmail: "new@example.test", currentPassword: "six123" }, "192.0.2.51", token), env);
+}
+async function applyNewEmail(env) {
+  return fetchHandler(post("/v1/auth/email-change/complete", { oobCode: "test-single-use-action-code" }), env);
+}
+async function sessionStatus(env, token) {
+  return (await fetchHandler(new Request("https://account-api.tomonode.site/v1/me", { headers: { authorization: `Bearer ${token}` } }), env)).status;
+}
+
+test("a credential change during Firebase password verification cannot create a fresh login challenge", async (t) => {
+  const { DB, env } = await emailFixture();
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    assert.ok(String(url).includes("accounts:signInWithPassword"));
+    calls += 1;
+    if (calls === 2) DB.sqlite.prepare("UPDATE accounts SET credential_version=credential_version+1 WHERE id='stable-id'").run();
+    return Response.json({ localId: "stable-uid", email: "old@example.test" });
+  });
+  try {
+    const result = await fetchHandler(post("/v1/auth/password/login", { email: "old@example.test", password: "six123" }), env);
+    assert.equal(result.status, 401);
+    assert.equal(calls, 2);
+    assert.equal(DB.sqlite.prepare("SELECT count(*) AS n FROM login_challenges").get().n, 0);
+  } finally { DB.close(); }
+});
+
+test("email change verifies password and mailbox, preserves identity/assets/plan, and revokes old sessions", async (t) => {
+  const { DB, env, token, createdAt } = await emailFixture();
+  const provider = emailProvider(t, { beforeApply: async () => assert.equal(await sessionStatus(env, token), 401) });
+  try {
+    assert.equal((await requestNewEmail(env, token)).status, 202);
+    assert.equal(await sessionStatus(env, token), 200, "request alone must not change account");
+    const changed = await applyNewEmail(env);
+    assert.equal(changed.status, 200, JSON.stringify(await changed.clone().json()));
+    assert.deepEqual(await changed.json(), { emailChanged: true, account: { userId: "stable-id", email: "new@example.test", createdAt, displayName: "Original Name", hasPassword: true } });
+    assert.equal(await sessionStatus(env, token), 401);
+    assert.equal(DB.sqlite.prepare("SELECT stripe_customer_id FROM accounts WHERE id='stable-id'").get().stripe_customer_id, "customer-id");
+    assert.deepEqual([...DB.sqlite.prepare("SELECT avatar_data FROM accounts WHERE id='stable-id'").get().avatar_data], [1,2,3]);
+    assert.equal(DB.sqlite.prepare("SELECT account_id FROM subscriptions").get().account_id, "stable-id");
+    assert.equal(DB.sqlite.prepare("SELECT count(*) AS n FROM pending_email_changes").get().n, 0);
+    assert.equal((await applyNewEmail(env)).status, 400);
+    assert.equal(provider.calls.filter(x => x === "accounts:update").length, 1);
+  } finally { DB.close(); }
+});
+
+for (const scenario of ["wrong-password", "wrong-purpose", "db-before-provider", "provider-unavailable", "db-after-provider"]) {
+  test(`email change fails safely: ${scenario}`, async (t) => {
+    const { DB, env, token } = await emailFixture();
+    const originalBatch = DB.batch.bind(DB);
+    const provider = emailProvider(t, {
+      badPassword: scenario === "wrong-password",
+      purpose: scenario === "wrong-purpose" ? "PASSWORD_RESET" : undefined,
+      providerUnavailable: scenario === "provider-unavailable",
+      afterApply: scenario === "db-after-provider" ? () => { DB.batch = async () => { throw new Error("injected database outage"); }; } : undefined,
+    });
+    try {
+      const requested = await requestNewEmail(env, token);
+      if (scenario === "wrong-password") {
+        assert.equal(requested.status, 401);
+        assert.equal(provider.calls.length, 1);
+        assert.equal(await sessionStatus(env, token), 200);
+        return;
+      }
+      assert.equal(requested.status, 202);
+      if (scenario === "db-before-provider") DB.batch = async () => { throw new Error("injected database outage"); };
+      const response = await applyNewEmail(env);
+      assert.equal(response.status, scenario === "wrong-purpose" ? 400 : 503);
+      assert.equal(provider.applied, scenario === "db-after-provider");
+      assert.equal(await sessionStatus(env, token), ["wrong-purpose", "db-before-provider"].includes(scenario) ? 200 : 401);
+      DB.batch = originalBatch;
+      if (scenario === "provider-unavailable") {
+        assert.equal((await applyNewEmail(env)).status, 409, "duplicate callback must respect applying lease");
+      }
+      if (scenario === "db-after-provider") {
+        const login = await fetchHandler(post("/v1/auth/password/login", { email: "new@example.test", password: "six123" }), env);
+        assert.equal(login.status, 202, JSON.stringify(await login.clone().json()));
+        const { challengeId } = await login.json();
+        const verified = await fetchHandler(post("/v1/auth/password/verify-login-code", { challengeId, code: provider.otp }), env);
+        assert.equal(verified.status, 200, JSON.stringify(await verified.clone().json()));
+        const recovered = await verified.json();
+        assert.equal(recovered.account.userId, "stable-id");
+        assert.equal(recovered.account.email, "new@example.test");
+        assert.equal(await sessionStatus(env, recovered.accessToken), 200);
+      }
+    } finally { DB.close(); }
+  });
 }
 
 async function hmacHex(secret, value) {

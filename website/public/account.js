@@ -77,7 +77,7 @@ const translations = {
     enrollmentRequestFailed: "確認コードを送信できませんでした。メールアドレスを確認するか、ログインをお試しください。",
     enrollmentCodeRejected: "確認コードが無効か期限切れです。メールの最新のコードを確認してください。",
     enrollmentFailed: "アカウントを作成できませんでした。入力内容を確認して、もう一度お試しください。",
-    enrollmentSuccess: "アカウントを作成しました。続けるにはログインしてください。デスクトップアプリの接続がある場合は、ログイン後にコードを確認して承認できます。",
+    enrollmentSuccess: "アカウントを作成し、このページでログインしました。デスクトップアプリへの接続は次の画面で確認して承認してください。",
     desktopSuccess: "TomoNodeデスクトップアプリへのログインを承認しました。このタブを閉じてアプリに戻ってください。",
     approveFailed: "アプリへの接続を承認できませんでした。コードを確認するか、アプリで接続をやり直してください。",
     reauthRequired: "セッションの有効期限が切れました。もう一度ログインしてください。",
@@ -161,7 +161,7 @@ const translations = {
     enrollmentRequestFailed: "The code could not be sent. Check the address or try signing in.",
     enrollmentCodeRejected: "The code is invalid or expired. Check the latest code in your email.",
     enrollmentFailed: "The account could not be created. Check your details and try again.",
-    enrollmentSuccess: "Your account is ready. Sign in to continue. If you started from the desktop app, you can review and approve its code after signing in.",
+    enrollmentSuccess: "Your account is ready and you’re signed in on this page. Review and approve the desktop app connection on the next screen if you started there.",
     desktopSuccess: "Sign-in to the TomoNode desktop app is approved. Close this tab and return to the app.",
     approveFailed: "The app connection could not be approved. Check the code or start again in the app.",
     reauthRequired: "Your session expired. Please sign in again.",
@@ -225,6 +225,7 @@ let pairingUserCode = "";
 let pairingExpiresInSeconds = 0;
 let pairingReady = !rawRequestId || !browserRequestId;
 let busy = false;
+let pairingInitialization = Promise.resolve();
 
 function t(key) {
   return translations[locale][key] ?? translations.en[key] ?? key;
@@ -510,7 +511,6 @@ document.querySelector("#register-code-form").addEventListener("submit", (event)
   const codeInput = document.querySelector("#register-code");
   if (!emailInput.value || !passwordIsValid(passwordInput.value, passwordInput) || !codeIsValid(codeInput)) return;
   const button = event.currentTarget.querySelector("button[type=submit]");
-  const form = event.currentTarget;
   void withLock(button, async () => {
     const verified = await callApi("/v1/auth/password/verify-enrollment-code", {
       body: { email: emailInput.value, code: codeInput.value },
@@ -524,18 +524,27 @@ document.querySelector("#register-code-form").addEventListener("submit", (event)
     const enrolled = await callApi("/v1/auth/password/enroll", {
       body: { email: emailInput.value, setupToken, password: passwordInput.value },
     });
-    if (!enrolled.ok) {
+    const accessToken = typeof enrolled.data.accessToken === "string" ? enrolled.data.accessToken.toLowerCase() : "";
+    const accountEmail = typeof enrolled.data.account?.email === "string" ? enrolled.data.account.email : "";
+    if (!enrolled.ok || enrolled.data.passwordSet !== true || enrolled.data.enrolled !== true
+      || !/^[a-f0-9]{64}$/.test(accessToken) || !accountEmail
+      || accountEmail.trim().toLowerCase() !== emailInput.value.trim().toLowerCase()) {
       handleAuthFailure(enrolled.status, "enrollment");
       return;
     }
-    document.querySelector("#login-email").value = emailInput.value;
     passwordInput.value = "";
     document.querySelector("#register-confirm").value = "";
     codeInput.value = "";
-    document.querySelector("#register-form").hidden = false;
-    form.hidden = true;
-    completionKey = "enrollmentSuccess";
-    setView("complete");
+    await pairingInitialization;
+    session = { accessToken, email: accountEmail };
+    if (pairingRequestId && pairingUserCode) {
+      document.querySelector("#consent-email").textContent = session.email;
+      document.querySelector("#consent-user-code").textContent = pairingUserCode;
+      setView("consent");
+    } else {
+      document.querySelector("#signed-in-email").textContent = session.email;
+      setView("signedIn");
+    }
     showStatus("enrollmentSuccess", "success");
   });
 });
@@ -677,4 +686,4 @@ for (const button of document.querySelectorAll("[data-toggle-password]")) {
 }
 
 setView(requestMode === "register" ? "register" : "login");
-if (rawRequestId) void initializePairing();
+if (rawRequestId) pairingInitialization = initializePairing();

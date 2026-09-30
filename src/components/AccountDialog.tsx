@@ -9,7 +9,7 @@ import { openExternalUrl } from "./ExternalLinkHandler";
 import { AccountSettingsPanel } from "./AccountSettingsPanel";
 import { Icon } from "./Icon";
 
-type AccountView = "checking" | "login" | "profile" | "security" | "plan" | "settings";
+type AccountView = "checking" | "login" | "profile" | "security" | "plan";
 
 const displayNameIsValid = (value: string) => {
   const normalized = value.trim();
@@ -222,6 +222,26 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
     }
   };
 
+  const requestEmailChange = async (newEmail: string, currentPassword: string) => {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await backend.accountRequestEmailChange(newEmail, currentPassword);
+      setNotice(settingsCopy.emailChangeRequested);
+    } catch (reason) {
+      setError(String(reason));
+      throw reason;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearAccountFeedback = () => {
+    setError("");
+    setNotice("");
+  };
+
   useEffect(() => {
     const attempt = browserAttempt;
     if (!attempt?.start || browserPollPaused) return;
@@ -380,17 +400,18 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
   const title = view === "checking" ? copy.profileSettings
     : view === "login" ? copy.title
       : view === "security" ? copy.security : copy.accountSettings;
-  const settingsOpen = Boolean(profile && (view === "profile" || view === "security" || view === "plan" || view === "settings"));
+  const settingsOpen = Boolean(profile && (view === "profile" || view === "security" || view === "plan"));
   const compact = view === "checking";
 
   return (
     <div className={`modal-backdrop account-backdrop${compact ? " account-profile-backdrop" : ""}`} onPointerDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section ref={dialogRef} tabIndex={-1} className={`wizard account-dialog${compact ? " account-dialog-popover" : ""}${settingsOpen ? " account-settings-dialog" : ""}`} role="dialog" aria-modal="true" aria-label={compact ? copy.profileSettings : undefined} aria-labelledby={compact ? undefined : "account-dialog-title"}>
-        {settingsOpen && profile ? <AccountSettingsPanel locale={locale} profile={profile} view={view as "profile" | "security" | "plan" | "settings"}
+        {settingsOpen && profile ? <AccountSettingsPanel locale={locale} profile={profile} view={view as "profile" | "security" | "plan"}
           displayName={displayName} busy={busy} isDesktop={backend.isDesktop} notice={notice} error={error} avatarInput={avatarInput}
           onViewChange={(next) => { setView(next); setError(""); setNotice(""); }} onDisplayNameChange={setDisplayName}
           onSaveDisplayName={(event) => void updateDisplayName(event)} onUploadAvatar={(event) => void uploadAvatar(event)}
           onRemoveAvatar={() => void removeAvatar()} onPasswordChange={() => void (profile.hasPassword ? requestCurrentPasswordReset() : startBrowserAuth("register"))}
+          onRequestEmailChange={requestEmailChange} onClearFeedback={clearAccountFeedback}
           onSignOut={() => void signOut()} onClose={onClose} />
           : view === "checking" ? <div className="account-profile-loading" role="status"><span className="spinner" /><strong>{copy.loading}</strong></div> : <>
           <header className="wizard-header account-dialog-header">

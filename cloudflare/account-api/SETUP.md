@@ -18,7 +18,7 @@ Existing `RESEND_API_KEY`, `RESEND_FROM`, `AUTH_CODE_PEPPER`, and `SESSION_PEPPE
 
 ## Database migration and rollout
 
-For a new environment, apply migrations `0002_password_auth.sql` and `0003_browser_auth.sql` to its D1 database before deploying the Worker:
+Apply all pending migrations, including `0004_email_change_and_identity.sql`, before deploying this Worker:
 
 ```powershell
 npx wrangler d1 migrations apply tomonode-accounts --remote
@@ -26,11 +26,11 @@ npx wrangler d1 migrations apply tomonode-accounts --remote
 
 The migrations are additive: they retain existing account/session data and add Firebase account linkage, credential versions, display names, private avatar BLOB columns, login challenges, purpose-bound enrollment proofs, and short-lived browser authorization requests. Browser requests store only the user-facing pairing code plus its HMAC, the PKCE-style challenge HMAC, status, expiry, and (after consent) the account ID and credential version. They never store a desktop verifier or access token. A password login challenge holds the Firebase UID privately, but does not link it to a legacy account until the email code has been consumed; this keeps a password-only attempt from disabling the legacy email-code route. Linking increments the account credential version, so earlier sessions stop authenticating. A legacy 0.5.7 OTP verification can no longer create a session after that account has a Firebase UID; accounts that have not enrolled retain the old route temporarily so a staged desktop rollout does not lock them out. New clients must use the password-first endpoints only.
 
-Password enrollment keeps the mailbox proof until Firebase creation and D1 linking both succeed. An active request leases that proof for at most two minutes. If Firebase creates the identity but D1 temporarily fails, retry the same enrollment with the same setup token and password before the ten-minute proof expires. When Firebase responds `EMAIL_EXISTS`, the Worker only attempts recovery by signing in with that submitted password while the same unexpired email proof is held. It does not delete Firebase identities. If recovery sign-in fails, use the password-reset flow for an account that already has a password.
+Password enrollment keeps the mailbox proof until Firebase creation and D1 linking both succeed. An active request leases that proof for at most two minutes. If Firebase creates the identity but D1 temporarily fails, retry the same enrollment with the same setup token and password before the ten-minute proof expires. When Firebase responds `EMAIL_EXISTS`, the Worker only attempts recovery by signing in with that submitted password while the same unexpired email proof is held. It does not delete Firebase identities. If recovery sign-in fails, use the password-reset flow for an account that already has a password. Successful enrollment consumes the proof and returns a session immediately; it does not ask for another password login or OTP. Desktop pairing consent is still required.
 
 Password reset first validates Firebase's one-use action code, revokes TomoNode sessions in D1, and then asks Firebase to commit the new password. This order avoids leaving TomoNode sessions valid if Firebase accepts the reset after D1 becomes unavailable. If the D1 revocation step fails, the password change is not submitted to Firebase.
 
-The account API Worker revision `c5052ac2` is deployed, and migration `0003_browser_auth.sql` has been applied to its D1 database. Before releasing matching desktop and website clients, confirm the Firebase project settings, Worker secrets, Resend sender, reset handler asset, and client behavior are ready. A Worker deployment and migration do not by themselves establish end-to-end client acceptance.
+Before releasing matching desktop and website clients, confirm the Firebase project settings, Worker secrets, Resend sender, reset/action handler assets, migration 0004, and client behavior are ready. A Worker deployment and migration do not by themselves establish real-mail or installed-client acceptance.
 
 ## API contract
 
@@ -42,10 +42,12 @@ All JSON responses are `no-store`. The login-code verification endpoint issues a
 | `POST /v1/auth/password/verify-login-code` | none | `{challengeId,code}` | `200 {accessToken,expiresAt,account:{email,displayName,hasPassword}}` |
 | `POST /v1/auth/password/request-enrollment-code` | none | `{email}` | Generic `202 {sent,expiresInSeconds}` |
 | `POST /v1/auth/password/verify-enrollment-code` | none | `{email,code}` | `200 {setupToken,expiresInSeconds}`; this is not a session |
-| `POST /v1/auth/password/enroll` | none | `{email,setupToken,password}` | `200 {passwordSet:true}`; this is not a session |
+| `POST /v1/auth/password/enroll` | verified mailbox proof | `{email,setupToken,password}` | `200 {passwordSet:true,enrolled:true,accessToken,expiresAt,account}` |
 | `POST /v1/auth/password/request-reset` | none | `{email}` | Enumeration-safe `202 {requested:true}` |
 | `POST /v1/me/password-reset` | Bearer session | `{}` | Fresh Firebase reset email for the signed-in account, `202 {requested:true}` |
 | `POST /v1/auth/password/complete-reset` | Firebase action code | `{oobCode,newPassword}` | `200 {passwordChanged:true}` and all TomoNode sessions/challenges for the account are revoked |
+| `POST /v1/account/email-change/request` | Bearer session + current password | `{newEmail,currentPassword}` | `202 {requested:true}`; Firebase sends a new-address verification link |
+| `POST /v1/auth/email-change/complete` | purpose-checked Firebase action code | `{oobCode}` | `200 {emailChanged:true,account}`; no session is issued |
 | `POST /v1/auth/browser/start` | none; native client | `{codeChallenge,mode,locale}` | `200 {requestId,userCode,browserUrl,expiresInSeconds,intervalSeconds}`; `codeChallenge` is lowercase SHA-256 hex of a 64-character lowercase hex verifier |
 | `GET /v1/auth/browser/request?requestId=...` | none; account page | — | `200 {userCode,expiresInSeconds,status}`; contains no account identity |
 | `POST /v1/auth/browser/approve` | Bearer password+email-code session created within the last 10 minutes | `{requestId,userCode}` | `200 {approved:true}` and the approving web session is revoked |
@@ -63,12 +65,16 @@ The native browser authorization flow keeps the verifier only in the desktop pro
 
 ## Profile privacy and data limits
 
+All profile responses include `userId` (the stable D1 account UUID) and `createdAt` (original account creation time in epoch milliseconds). These are not display names or generated placeholder dates. Email changes update that same UID-bound row and retain its display name, avatar, billing linkage, and subscription records.
+
+Email changes reauthenticate the current password, reserve the target address, and send Firebase's `VERIFY_AND_CHANGE_EMAIL` action. The callback validates purpose and the reserved identity, revokes old sessions/challenges/browser grants before Firebase consumes the code, and finalizes the address conditionally. A short applying lease serializes duplicate callbacks. If Firebase succeeds but D1 finalization fails, password login with the new address plus its mailbox OTP reconciles the same Firebase UID to the existing D1 identity. The website handles `verifyAndChangeEmail` at `/password-reset.html`; an old-address `recoverEmail` link is explicitly handed to the fixed official Firebase handler, not an arbitrary continue URL. Check the email-change template action URL in the Firebase Console as well; an already-saved password-reset action URL alone is not proof of the email-change template setting.
+
 - The display/account name is separate from the Minecraft username; duplicate display names are allowed. It is trimmed, 1–32 Unicode code points, and control characters are rejected.
 - One custom avatar is stored per account as a D1 BLOB; no public URL or third-party image host is created. The authenticated avatar endpoint is separate from `/v1/me`, returns `private, no-store`, and requires the user's Bearer session on every read.
-- Persisted avatar size is at most 128 KiB. Only PNG, JPEG, and WebP raster containers are accepted; SVG/unknown formats, oversized dimensions (over 1024×1024 or one megapixel), animated PNG/WebP, and common EXIF/XMP metadata are rejected. The desktop client should accept at most a 5 MiB source file, resize/re-encode with canvas to a square image, strip EXIF by re-encoding, and send the resulting MIME and prefixless Base64. The Worker independently checks Base64, container signature, image chunk/frame structure, dimensions, and persisted byte limit.
+- Persisted avatar size is at most 128 KiB. Only PNG, JPEG, and WebP raster containers are accepted; SVG/unknown formats, oversized dimensions (over 1024×1024 or one megapixel), animated PNG/WebP, and common EXIF/XMP metadata are rejected. The desktop client accepts a 20 MiB source image, crops/resizes/re-encodes it with canvas to a square image, strips EXIF by re-encoding, and sends the resulting MIME and prefixless Base64. The Worker independently checks Base64, container signature, image chunk/frame structure, dimensions, and persisted byte limit.
 - Upload, read, and delete endpoints are private account APIs. Remove an avatar with `DELETE /v1/me/avatar`; no avatar is fetched during frequent profile/session checks.
 - Never log passwords, setup tokens, email codes, Firebase action codes, Firebase ID/refresh tokens, or avatar Base64. Firebase provider ID/refresh tokens are intentionally discarded and never returned to the client.
 
 ## Local checks
 
-Run `npm run typecheck` and `npm test` from `cloudflare/account-api`. The test script runs the Vitest suite and then `node --test integration/browser-auth-sqlite.node.mjs`; the latter applies migrations 0001–0003 to an in-memory SQLite database and exercises the browser authorization SQL without connecting to a D1 database. It uses Node's built-in `node:sqlite` module. Keep the `.node.mjs` suffix so workspace-wide Vitest discovery does not treat this `node:test` file as a Vitest test.
+Run `npm run typecheck` and `npm test` from `cloudflare/account-api`. The test script runs Vitest and then `node --test integration/browser-auth-sqlite.node.mjs`; the latter applies migrations 0001–0004 to an in-memory SQLite database and exercises browser authorization, email changes, identity preservation, credential races, and injected provider/database failures without real email or production account changes. Keep the `.node.mjs` suffix so workspace-wide Vitest discovery does not treat this `node:test` file as a Vitest test.
