@@ -1404,6 +1404,8 @@ a { color: var(--accent); }
 .account-dialog-body { min-height: 0; display: flex; flex-direction: column; gap: 16px; }
 .account-dialog-body > p { margin: 0; }
 .account-form { gap: 14px; }
+.account-browser-auth-code { display: grid; justify-items: center; gap: 6px; padding: 14px 18px; border: 1px solid #32636b; border-radius: 10px; background: #0b1b23; color: var(--muted); font-size: 12px; }
+.account-browser-auth-code output { color: var(--text); font: 700 28px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .14em; user-select: all; }
 .account-status-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 17px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-soft); }
 .account-status-card > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; overflow-wrap: anywhere; }
 .account-status-card strong { font-size: 15px; }

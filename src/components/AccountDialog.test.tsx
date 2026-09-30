@@ -3,8 +3,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { backend } from "../lib/backend";
 import { accountText } from "../lib/accountLocale";
 import { accountSettingsText } from "../lib/accountSettingsLocale";
-import type { AccountProfile } from "../lib/accountTypes";
+import type { AccountBrowserAuthStart, AccountProfile } from "../lib/accountTypes";
+import { openExternalUrl } from "./ExternalLinkHandler";
 import { AccountDialog } from "./AccountDialog";
+
+vi.mock("./ExternalLinkHandler", () => ({ openExternalUrl: vi.fn() }));
 
 const copy = accountText("ja");
 const settingsCopy = accountSettingsText("ja");
@@ -14,6 +17,13 @@ const profile: AccountProfile = {
   hasPassword: true,
   avatarDataUrl: null,
 };
+const browserAuthStart: AccountBrowserAuthStart = {
+  browserUrl: "https://tomonode.site/account.html?request=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&mode=login&lang=ja",
+  requestId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  userCode: "ABCD-EFGH",
+  expiresInSeconds: 600,
+  intervalSeconds: 3,
+};
 
 let originalDesktop = false;
 
@@ -21,6 +31,7 @@ beforeEach(() => { originalDesktop = backend.isDesktop; });
 afterEach(() => {
   backend.isDesktop = originalDesktop;
   vi.restoreAllMocks();
+  vi.mocked(openExternalUrl).mockReset();
 });
 
 function renderAccount(onClose = vi.fn(), initialProfile: AccountProfile | null = profile, profileLoaded = true) {
@@ -30,6 +41,119 @@ function renderAccount(onClose = vi.fn(), initialProfile: AccountProfile | null 
 }
 
 describe("AccountDialog", () => {
+  it("starts browser login from the signed-out dialog without native credential fields", async () => {
+    backend.isDesktop = true;
+    const startAuth = vi.spyOn(backend, "accountBrowserAuthStart").mockResolvedValue(browserAuthStart);
+    vi.spyOn(backend, "accountBrowserAuthPoll").mockResolvedValue({ status: "pending", account: null });
+    const cancelAuth = vi.spyOn(backend, "accountBrowserAuthCancel").mockResolvedValue(undefined);
+    vi.mocked(openExternalUrl).mockResolvedValue(undefined);
+    const { unmount } = renderAccount(vi.fn(), null, true);
+    const dialog = screen.getByRole("dialog", { name: copy.title });
+
+    expect(within(dialog).queryByLabelText(copy.email)).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText(copy.password)).not.toBeInTheDocument();
+    expect(dialog.querySelectorAll("input")).toHaveLength(0);
+    fireEvent.click(within(dialog).getByRole("button", { name: copy.browserAuthLogin }));
+
+    expect(await within(dialog).findByLabelText(copy.browserAuthCode)).toHaveTextContent(browserAuthStart.userCode);
+    expect(startAuth).toHaveBeenCalledWith(expect.any(String), "login", "ja");
+    expect(openExternalUrl).toHaveBeenCalledWith(browserAuthStart.browserUrl);
+    expect(within(dialog).getByRole("button", { name: copy.browserAuthReopen })).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: copy.browserAuthCancel })).toBeInTheDocument();
+
+    const clientAttemptId = startAuth.mock.calls[0]?.[0];
+    unmount();
+    await waitFor(() => expect(cancelAuth).toHaveBeenCalledWith(clientAttemptId));
+  });
+
+  it("re-enables browser login after a start failure so the user can retry", async () => {
+    backend.isDesktop = true;
+    const startAuth = vi.spyOn(backend, "accountBrowserAuthStart")
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue(browserAuthStart);
+    vi.spyOn(backend, "accountBrowserAuthPoll").mockResolvedValue({ status: "pending", account: null });
+    vi.spyOn(backend, "accountBrowserAuthCancel").mockResolvedValue(undefined);
+    vi.mocked(openExternalUrl).mockResolvedValue(undefined);
+    renderAccount(vi.fn(), null, true);
+    fireEvent.click(screen.getByRole("button", { name: copy.browserAuthLogin }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: copy.browserAuthLogin })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: copy.browserAuthLogin }));
+
+    expect(await screen.findByLabelText(copy.browserAuthCode)).toHaveTextContent(browserAuthStart.userCode);
+    expect(startAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it("finishes browser polling and publishes the signed-in profile", async () => {
+    backend.isDesktop = true;
+    vi.spyOn(backend, "accountBrowserAuthStart").mockResolvedValue(browserAuthStart);
+    vi.spyOn(backend, "accountBrowserAuthPoll").mockResolvedValue({ status: "complete", account: profile });
+    vi.mocked(openExternalUrl).mockResolvedValue(undefined);
+    const { onProfileChange } = renderAccount(vi.fn(), null, true);
+
+    fireEvent.click(screen.getByRole("button", { name: copy.browserAuthLogin }));
+
+    expect(await screen.findByRole("dialog", { name: copy.accountSettings })).toHaveTextContent(profile.email);
+    expect(onProfileChange).toHaveBeenCalledWith(profile);
+    expect(backend.accountBrowserAuthPoll).toHaveBeenCalledWith(browserAuthStart.requestId);
+  });
+
+  it("cancels an active browser attempt and returns to the signed-out choices", async () => {
+    backend.isDesktop = true;
+    const startAuth = vi.spyOn(backend, "accountBrowserAuthStart").mockResolvedValue(browserAuthStart);
+    vi.spyOn(backend, "accountBrowserAuthPoll").mockResolvedValue({ status: "pending", account: null });
+    const cancelAuth = vi.spyOn(backend, "accountBrowserAuthCancel").mockResolvedValue(undefined);
+    vi.mocked(openExternalUrl).mockResolvedValue(undefined);
+    renderAccount(vi.fn(), null, true);
+    fireEvent.click(screen.getByRole("button", { name: copy.browserAuthLogin }));
+    await screen.findByLabelText(copy.browserAuthCode);
+    const clientAttemptId = startAuth.mock.calls[0]?.[0];
+
+    fireEvent.click(screen.getByRole("button", { name: copy.browserAuthCancel }));
+
+    await waitFor(() => expect(cancelAuth).toHaveBeenCalledWith(clientAttemptId));
+    expect(screen.getByRole("button", { name: copy.browserAuthLogin })).toBeInTheDocument();
+    expect(screen.queryByLabelText(copy.browserAuthCode)).not.toBeInTheDocument();
+  });
+
+  it("offers an actionable retry after a poll failure", async () => {
+    backend.isDesktop = true;
+    vi.spyOn(backend, "accountBrowserAuthStart").mockResolvedValue(browserAuthStart);
+    const pollAuth = vi.spyOn(backend, "accountBrowserAuthPoll")
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValue({ status: "pending", account: null });
+    vi.mocked(openExternalUrl).mockResolvedValue(undefined);
+    renderAccount(vi.fn(), null, true);
+    fireEvent.click(screen.getByRole("button", { name: copy.browserAuthLogin }));
+    await screen.findByRole("alert");
+    expect(screen.getByRole("button", { name: copy.browserAuthRetry })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: copy.browserAuthRetry }));
+
+    await waitFor(() => expect(pollAuth).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("opens browser registration for password setup on a profile without a password", async () => {
+    backend.isDesktop = true;
+    const startAuth = vi.spyOn(backend, "accountBrowserAuthStart").mockResolvedValue({
+      ...browserAuthStart,
+      browserUrl: "https://tomonode.site/account.html?request=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&mode=register&lang=ja",
+    });
+    vi.spyOn(backend, "accountBrowserAuthPoll").mockResolvedValue({ status: "pending", account: null });
+    vi.mocked(openExternalUrl).mockResolvedValue(undefined);
+    const profileWithoutPassword = { ...profile, hasPassword: false };
+    const { unmount } = renderAccount(vi.fn(), profileWithoutPassword, true);
+    const settings = screen.getByRole("dialog", { name: copy.accountSettings });
+    fireEvent.click(within(settings).getByRole("tab", { name: copy.security }));
+    fireEvent.click(within(settings).getByRole("button", { name: new RegExp(copy.passwordChange) }));
+
+    expect(await screen.findByLabelText(copy.browserAuthCode)).toHaveTextContent(browserAuthStart.userCode);
+    expect(startAuth).toHaveBeenCalledWith(expect.any(String), "register", "ja");
+    unmount();
+  });
+
   it("opens the signed-in account as a three-tab settings dialog", () => {
     renderAccount();
 

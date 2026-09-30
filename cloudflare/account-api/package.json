@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run && node --test integration/browser-auth-sqlite.node.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
