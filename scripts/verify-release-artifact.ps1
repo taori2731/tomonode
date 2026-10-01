@@ -77,7 +77,7 @@ $packageLockText = Get-Content -LiteralPath (Join-Path $workspaceRoot "package-l
 $packageLockVersion = if ($packageLockText -match '(?m)^\s*"version"\s*:\s*"([^"]+)"\s*,') { $Matches[1] } else { "" }
 $packageLockRootVersion = if ($packageLockText -match '(?s)"packages"\s*:\s*\{\s*""\s*:\s*\{.*?"version"\s*:\s*"([^"]+)"') { $Matches[1] } else { "" }
 $cargoToml = Get-Content -LiteralPath (Join-Path $workspaceRoot "src-tauri\Cargo.toml") -Raw -Encoding UTF8
-$cargoVersion = if ($cargoToml -match '(?m)^version\s*=\s*"([^"]+)"$') { $Matches[1] } else { "" }
+$cargoVersion = if ($cargoToml -match '(?m)^version\s*=\s*"([^"]+)"\s*$') { $Matches[1] } else { "" }
 $cargoLockText = Get-Content -LiteralPath (Join-Path $workspaceRoot "src-tauri\Cargo.lock") -Raw -Encoding UTF8
 $cargoLockVersion = if ($cargoLockText -match '(?ms)\[\[package\]\]\s*name\s*=\s*"minecraft-server-hub"\s*version\s*=\s*"([^"]+)"') { $Matches[1] } else { "" }
 $tauriJson = Get-Content -LiteralPath (Join-Path $workspaceRoot "src-tauri\tauri.conf.json") -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -104,7 +104,7 @@ if ($manifestUrlName -ne $installerName) {
 if ($signatureText -ne $manifestSignature) {
     throw "The adjacent .sig and manifest signature differ."
 }
-if ($versionSources.Values | Where-Object { $_ -ne $ExpectedVersion }) {
+if (@($versionSources.Values | Where-Object { $_ -ne $ExpectedVersion }).Count -gt 0) {
     throw "Source version files do not all match $ExpectedVersion."
 }
 if ($publicKey -ne $configuredPublicKey) {
