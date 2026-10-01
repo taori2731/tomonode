@@ -4,7 +4,7 @@ import { backend } from "../lib/backend";
 import { brand } from "../lib/brand";
 import { I18nProvider, translate, type AppLocale } from "../lib/i18n";
 import { getRebrandCopy } from "../lib/rebrandLocale";
-import { GITHUB_SPONSORS_SETUP_URL, GITHUB_SPONSORS_URL, supportConfig } from "../lib/supporterConfig";
+import { supportConfig } from "../lib/supporterConfig";
 import type { RuntimeStatus } from "../types";
 import { AppSettingsDialog } from "./AppSettingsDialog";
 
@@ -40,15 +40,13 @@ describe("アプリ設定", () => {
     fireEvent.click(screen.getByRole("button", { name: "TomoNodeを応援" }));
     expect(screen.getByRole("heading", { name: "TomoNodeを応援" })).toBeInTheDocument();
     expect(screen.getByText("支援は任意です。安定して提供している機能と安全機能は、これからも全員が無料で利用できます。")).toBeInTheDocument();
-    expect(screen.getByText("支援受付は準備中")).toBeInTheDocument();
-    expect(screen.getByText("GitHub Sponsorsの受取設定完了後に利用可能です。現在は受取設定が完了していないため、一般向けの支援受付はまだ始まっていません。このアプリで決済情報を入力・保存することはありません。")).toBeInTheDocument();
-    const setupGuide = screen.getByRole("link", { name: "受取設定の手順（開発者向け）" });
-    expect(setupGuide).toHaveAttribute("href", GITHUB_SPONSORS_SETUP_URL);
-    expect(setupGuide).toHaveAttribute("target", "_blank");
-    expect(setupGuide).toHaveAttribute("rel", "noopener noreferrer");
-    expect(screen.getByText("将来追加する新機能の先行体験")).toBeInTheDocument();
-    expect(screen.getByText("開発中の機能へのフィードバック参加")).toBeInTheDocument();
-    expect(screen.getByText("限定デザインやアイコンなどの外観")).toBeInTheDocument();
+    expect(screen.getByText("Stripeの応援プランは準備中")).toBeInTheDocument();
+    expect(screen.getByText("￥500 / 月")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "本番受付は準備中" })).toBeDisabled();
+    expect(screen.queryByRole("link", { name: "受取設定の手順（開発者向け）" })).not.toBeInTheDocument();
+    expect(screen.getByText("提供中の先行体験を任意で利用（現在は対象なし）")).toBeInTheDocument();
+    expect(screen.getByText("標準＋新しい限定テーマ3種類")).toBeInTheDocument();
+    expect(screen.getByText("サーバー登録は3個まで")).toBeInTheDocument();
     expect(screen.queryByText("無料版とPro／サポーター版")).not.toBeInTheDocument();
     expect(screen.queryByText("価格未定")).not.toBeInTheDocument();
     expect(screen.queryByText("準備中（購入できません）")).not.toBeInTheDocument();
@@ -69,20 +67,14 @@ describe("アプリ設定", () => {
     expect(fail).not.toHaveBeenCalled();
   });
 
-  it("opens the fixed GitHub Sponsors URL when support is enabled", async () => {
+  it("routes the enabled supporter action through the existing account UI callback", async () => {
     localStorage.setItem("server-hub:language:v1", "ja");
     supportConfig.enabled = true;
-    const server = (await backend.listServers()).find((item) => item.serverType === "paper")!;
-    const status: RuntimeStatus = { state: "stopped", playerCount: 0, maxPlayers: 20, memoryUsedMib: 0, uptimeSeconds: 0, address: "127.0.0.1:25565", cpuPercent: 0, tps: null, tpsSupported: false, pingLatencyMs: null };
     vi.spyOn(backend, "listFixedPlayers").mockResolvedValue([]);
-    const open = vi.spyOn(window, "open").mockReturnValue({} as Window);
-
-    render(<I18nProvider><AppSettingsDialog server={server} status={status} servers={[server]} statuses={{ [server.id]: status }} onStatusesChanged={() => undefined} onAppearanceChanged={() => undefined} onClose={() => undefined} notify={() => undefined} fail={vi.fn()} /></I18nProvider>);
-    fireEvent.click(screen.getByRole("button", { name: "TomoNodeを応援" }));
-    expect(screen.getByText("GitHub Sponsorsで支援できます")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "受取設定の手順（開発者向け）" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "GitHub Sponsorsで支援" }));
-    await waitFor(() => expect(open).toHaveBeenCalledWith(GITHUB_SPONSORS_URL, "_blank", "noopener,noreferrer"));
+    const account = vi.fn();
+    render(<I18nProvider><AppSettingsDialog initialSection="plan" onAccount={account} servers={[]} statuses={{}} onStatusesChanged={() => undefined} onAppearanceChanged={() => undefined} onClose={() => undefined} notify={() => undefined} fail={vi.fn()} /></I18nProvider>);
+    fireEvent.click(screen.getByRole("button", { name: "Stripeで応援プランに申し込む" }));
+    expect(account).toHaveBeenCalledOnce();
   });
 
   it.each(["ja", "en", "de", "es", "fr", "ko", "pt-BR", "zh-CN", "zh-TW"] as const)("shows the non-affiliation statement with TomoNode in %s", async (locale: AppLocale) => {

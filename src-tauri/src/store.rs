@@ -628,6 +628,18 @@ impl Store {
             })
     }
 
+    pub fn insert_registered_server(
+        &self,
+        server: &ServerProfile,
+        membership: &crate::membership::MembershipView,
+    ) -> AppResult<()> {
+        let transaction = self.connection.unchecked_transaction()?;
+        crate::membership::ensure_registration(self.list_servers()?.len(), membership)?;
+        self.insert_server(server)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn insert_server(&self, server: &ServerProfile) -> AppResult<()> {
         let settings = serde_json::to_string(&server.settings)?;
         let game_settings = server

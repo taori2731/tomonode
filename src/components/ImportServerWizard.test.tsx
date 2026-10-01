@@ -10,7 +10,8 @@ describe("既存サーバー取り込み", () => {
   it("読み取りスキャンの確認内容だけをユーザー承認後に登録する", async () => {
     const imported = vi.fn();
     const inspect = vi.spyOn(backend, "inspectExistingServer");
-    const importServer = vi.spyOn(backend, "importExistingServer");
+    const base = (await backend.listServers())[0];
+    const importServer = vi.spyOn(backend, "importExistingServer").mockResolvedValue({ ...base, name:"Imported Paper" });
     render(<ImportServerWizard onClose={() => undefined} onImported={imported} />);
 
     fireEvent.click(screen.getByRole("button", { name: "選択" }));

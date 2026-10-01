@@ -20,6 +20,40 @@
 .app[data-accent="emerald"] { --accent: #36df85; --accent-strong: #12934e; --accent-contrast: #052516; --accent-soft: #36df8515; }
 .app[data-theme="light"] { --bg: #f3f7fb; --bg-soft: #f7fafc; --surface: #fff; --surface-raised: #f8fbfd; --surface-hover: #eaf3f5; --border: #d8e3eb; --border-subtle: #e7eef3; --text: #162735; --muted: #536979; --faint: #667e8b; }
 .app[data-theme="light"][data-accent="emerald"] { --accent: #098448; --accent-strong: #066939; --accent-contrast: #fff; --accent-soft: #09844810; }
+.app[data-member-theme="midnight"] { --bg:#0a162a; --bg-soft:#101e35; --surface:#142640; --surface-raised:#1b3050; --surface-hover:#243c5d; --border:#465f7e; --border-subtle:#304864; --text:#f0f6ff; --muted:#bed0e5; --faint:#a6bdd8; --accent:#79cefa; --accent-strong:#3caddf; --accent-contrast:#061f30; --accent-soft:#79cefa20; }
+.app[data-member-theme="orchid"] { --bg:#20182c; --bg-soft:#281f36; --surface:#302641; --surface-raised:#3b3050; --surface-hover:#46385e; --border:#736086; --border-subtle:#564267; --text:#faf3ff; --muted:#d7c4e4; --faint:#bfabcF; --accent:#d3b6ff; --accent-strong:#b891ee; --accent-contrast:#251234; --accent-soft:#d3b6ff20; }
+.app[data-member-theme="ember"] { --bg:#251b16; --bg-soft:#30221b; --surface:#3a2b22; --surface-raised:#46352b; --surface-hover:#544035; --border:#86664f; --border-subtle:#644936; --text:#fff5e8; --muted:#e2c8b1; --faint:#cbb198; --accent:#ffc184; --accent-strong:#ed9e55; --accent-contrast:#2d1808; --accent-soft:#ffc18420; }
+.app[data-member-theme] { --warning:#ffd581; --danger:#ffa2a2; --success:#78e5b1; color-scheme:dark; }
+.app[data-member-theme] :is(button,input,select,textarea) { color:var(--text); border-color:var(--border); }
+.app[data-member-theme] :is(input,select,textarea) { background:var(--bg-soft); }
+.app[data-member-theme] .primary-button { color:var(--accent-contrast); background:var(--accent); }
+.app[data-member-theme] :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+.membership-count { position:absolute; left:16px; bottom:155px; z-index:2; pointer-events:none; padding:5px 9px; font-size:12px; border-radius:8px; background:var(--bg-soft); color:var(--muted); }
+.membership-summary { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:16px; border:1px solid var(--border); border-radius:10px; margin-block:16px; }
+.membership-summary small { flex-basis:100%; color:var(--muted); }
+.supporter-benefits button, .discord-notification-panel button, .limit-dialog button { border:1px solid var(--border); border-radius:8px; padding:10px 14px; background:var(--surface-raised); color:var(--text); margin:4px; }
+.member-plan-grid > article.current { background:#0d332f; color:#edf4f6; border-color:#00d3a7; }
+.member-plan-grid > article.member-supporter-plan { background:#1d283b; color:#edf4f6; border-color:#aa84e2; }
+.member-plan-grid .member-supporter-plan button { background:#8770ba; color:#fff; }
+.member-plan-grid > article :is(p,ul,li) { color:#d3dce8; }
+.member-theme-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-block:16px; }
+.member-theme-grid article { padding:16px; border:1px solid; border-radius:12px; min-width:0; }
+.member-theme-grid button { background:#172635; color:#f3f4f8; }
+.member-theme-swatch { height:8px; border-radius:6px; margin-bottom:15px; }
+.discord-notification-panel > label { display:grid; gap:8px; margin-block:16px; }
+.discord-notification-panel > label.switch-row, .discord-notification-panel fieldset > label { display:flex; align-items:center; gap:9px; }
+.discord-notification-panel input[type="checkbox"] { width:18px; height:18px; flex:0 0 18px; accent-color:var(--accent); }
+.discord-notification-panel input:not([type="checkbox"]), .discord-notification-panel select { width:100%; min-height:42px; padding:10px; background:var(--bg-soft); border:1px solid var(--border); border-radius:8px; color:var(--text); }
+.discord-notification-panel fieldset { border:1px solid var(--border); border-radius:10px; display:flex; flex-wrap:wrap; gap:16px; margin-block:16px; }
+.limit-dialog { padding:24px; overflow:auto; }
+@media(max-width:760px) { .member-theme-grid { grid-template-columns:1fr; } .membership-count { display:none; } .member-plan-grid { grid-template-columns:1fr; } }
+@media(max-width:760px) {
+  .app-settings-dialog .settings-dialog-layout { display:flex; flex-direction:column; min-height:0; overflow:auto; }
+  .app-settings-dialog .settings-dialog-layout > nav { display:flex; flex-direction:row; flex-wrap:wrap; gap:5px; padding:10px; border-right:0; border-bottom:1px solid var(--border); flex-shrink:0; }
+  .app-settings-dialog .settings-dialog-layout > nav button { width:auto; padding:8px; min-height:36px; flex:1 1 120px; }
+  .app-settings-dialog .settings-dialog-content { padding:16px; overflow:visible; min-width:0; }
+  .discord-notification-panel { overflow-wrap:anywhere; }
+}
 .app .titlebar { min-height: 68px; height: auto; flex: 0 0 auto; padding: 12px 22px; gap: 12px; background: var(--bg-soft); }
 .titlebar > strong { font-size: 19px; flex-shrink: 0; }
 .titlebar .brand-mark { flex-shrink: 0; width: 35px; }
@@ -144,6 +178,7 @@
 .access-log-list span { overflow-wrap: anywhere; }
 .home-hub { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; padding: 20px 22px 22px; }
 .home-main { min-width: 0; }
+.home-rail { min-width: 0; align-self: start; display: grid; gap: 18px; }
 .home-banner { min-height: 230px; border-radius: 12px; padding: 26px; display: flex; align-items: center; background: #10262d url('/assets/server-landscape.png') center / cover; color: #fff; overflow: hidden; }
 .home-banner > div { max-width: 460px; }
 .home-banner { background-image: url('/assets/server-sunset.png'); }
@@ -447,7 +482,7 @@
   .console-panel { height: max(320px, calc(100dvh - 390px)); }
   .home-main { display: contents; }
   .home-banner { order: 0; }
-  .home-inspector { order: 1; }
+  .home-rail { order: 1; }
   .home-servers { order: 2; }
   .home-inspector .server-hero { grid-column: 1; grid-row: 1 / 4; }
   .home-inspector .server-art { display: none; }

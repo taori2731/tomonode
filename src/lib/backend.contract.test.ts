@@ -5,6 +5,8 @@ import { brand } from "./brand";
 describe("ブラウザ用バックエンド契約", () => {
   it("作成から安全停止・Delete確認削除まで本番と同じ状態遷移を保つ", async () => {
     const base = (await backend.listServers()).find((item) => item.serverType === "paper")!;
+    await backend.stop("demo-vanilla");
+    await backend.deleteServer({ serverId:"demo-vanilla", deleteFiles:false, confirmationText:"Delete" });
     const port = await backend.suggestServerPort(26000);
     const created = await backend.createServer({
       name: "Contract Server",
@@ -23,7 +25,7 @@ describe("ブラウザ用バックエンド契約", () => {
 
     expect(created.port).toBe(port);
     expect((await backend.status(created.id)).state).toBe("stopped");
-    await expect(backend.createServer({ ...created, parentPath: "C:\\Servers", eulaAccepted: true, port } as Parameters<typeof backend.createServer>[0])).rejects.toThrow(/ポート/);
+    await expect(backend.createServer({ ...created, parentPath: "C:\\Servers", eulaAccepted: true, port } as Parameters<typeof backend.createServer>[0])).rejects.toThrow(/FREE_SERVER_LIMIT/);
 
     await backend.start(created.id);
     expect((await backend.status(created.id)).state).toBe("running");

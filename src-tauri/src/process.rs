@@ -10,7 +10,7 @@ use std::{
 use chrono::Local;
 use regex::Regex;
 use sysinfo::{Pid, ProcessesToUpdate, System};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{
     bedrock,
@@ -371,6 +371,9 @@ pub fn start(
     );
     drop(process_guard);
     drop(stopping_guard);
+    if let Some(state) = app.try_state::<crate::AppState>() {
+        state.discord.spawned(&profile.id);
+    }
     let _ = app.emit("server-status", (&profile.id, "starting"));
     Ok(())
 }

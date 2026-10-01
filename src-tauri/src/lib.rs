@@ -5,6 +5,7 @@ mod bedrock;
 mod credentials;
 mod crossplay;
 mod diagnostics;
+mod discord_notifications;
 mod downloads;
 mod error;
 mod existing;
@@ -15,6 +16,7 @@ mod invite;
 mod java;
 mod launch_observer;
 mod legacy_cleanup;
+mod membership;
 mod migration;
 mod mod_management;
 mod models;
@@ -28,6 +30,7 @@ mod process;
 mod profiles;
 mod protected_data;
 mod quarantine;
+mod secure_secrets;
 mod server_diagnosis;
 mod server_files;
 mod settings;
@@ -138,6 +141,9 @@ fn app_update_install_allowed(running: usize, stopping: usize, stop_operations: 
 
 pub struct AppState {
     store: Arc<Mutex<Store>>,
+    registration: tokio::sync::Mutex<()>,
+    membership: membership::MembershipService,
+    discord: discord_notifications::DiscordService,
     server_operations: ServerOperationCoordinator,
     client: reqwest::Client,
     processes: Arc<ProcessMap>,
@@ -712,10 +718,16 @@ fn inspect_server_migration(archive_path: String) -> AppResult<MigrationManifest
 }
 
 #[tauri::command]
-fn restore_server_migration(
+async fn restore_server_migration(
     input: RestoreMigrationInput,
     state: State<'_, AppState>,
 ) -> AppResult<ServerProfile> {
+    let _registration = state.registration.lock().await;
+    let qualification = state.membership.view(&state.client, false).await?;
+    membership::ensure_registration(
+        state.store.lock().unwrap().list_servers()?.len(),
+        &qualification,
+    )?;
     let existing = state.store.lock().unwrap().list_servers()?;
     let (manifest, destination) = migration::restore(&input)?;
     let transport = if manifest.server_type == "bedrock" {
@@ -772,7 +784,12 @@ fn restore_server_migration(
         created_at: now.clone(),
         updated_at: now,
     };
-    if let Err(error) = state.store.lock().unwrap().insert_server(&profile) {
+    if let Err(error) = state
+        .store
+        .lock()
+        .unwrap()
+        .insert_registered_server(&profile, &qualification)
+    {
         let _ = std::fs::remove_dir_all(&destination);
         return Err(error);
     }
@@ -854,10 +871,16 @@ fn inspect_existing_server(root_path: String) -> AppResult<ImportPreview> {
 }
 
 #[tauri::command]
-fn import_existing_server(
+async fn import_existing_server(
     input: ImportServerInput,
     state: State<'_, AppState>,
 ) -> AppResult<ServerProfile> {
+    let _registration = state.registration.lock().await;
+    let qualification = state.membership.view(&state.client, false).await?;
+    membership::ensure_registration(
+        state.store.lock().unwrap().list_servers()?.len(),
+        &qualification,
+    )?;
     let name = input.name.trim();
     if name.is_empty() || name.chars().count() > 64 {
         return Err(AppError::Validation(
@@ -922,17 +945,35 @@ fn import_existing_server(
         profile.network_transport(),
         profile.server_type == "bedrock",
     )?;
-    if input.create_initial_backup {
-        backup::create(&state.backups_dir, &profile, "initial-import")?;
+    let initial_backup = if input.create_initial_backup {
+        Some(backup::create(
+            &state.backups_dir,
+            &profile,
+            "initial-import",
+        )?)
+    } else {
+        None
+    };
+    if let Err(error) = state
+        .store
+        .lock()
+        .unwrap()
+        .insert_registered_server(&profile, &qualification)
+    {
+        // Remove only the newly created backup of this failed attempt, never
+        // previous backups or data in the imported server folder.
+        if let Some(backup) = initial_backup {
+            let _ = backup::delete(&state.backups_dir, &profile.id, &backup.id);
+        }
+        return Err(error);
     }
-    state.store.lock().unwrap().insert_server(&profile)?;
-    append_audit(
+    let _ = append_audit(
         &state.audit_dir,
         &profile.id,
         "local-host",
         "server.import",
         &format!("fingerprint={}", input.source_fingerprint),
-    )?;
+    );
     drop(verified_bedrock);
     Ok(profile)
 }
@@ -1041,6 +1082,12 @@ async fn create_server(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> AppResult<ServerProfile> {
+    let _registration = state.registration.lock().await;
+    let qualification = state.membership.view(&state.client, false).await?;
+    membership::ensure_registration(
+        state.store.lock().unwrap().list_servers()?.len(),
+        &qualification,
+    )?;
     validate_create_input(&input)?;
     let is_palworld = input.game_kind.eq_ignore_ascii_case("palworld")
         || input.server_type.eq_ignore_ascii_case("palworld");
@@ -1146,7 +1193,16 @@ async fn create_server(
         created_at: now.clone(),
         updated_at: now,
     };
-    if let Err(error) = state.store.lock().unwrap().insert_server(&profile) {
+    let registration_result = async {
+        let qualification = state.membership.view(&state.client, false).await?;
+        state
+            .store
+            .lock()
+            .unwrap()
+            .insert_registered_server(&profile, &qualification)
+    }
+    .await;
+    if let Err(error) = registration_result {
         if is_palworld {
             let _ = credentials::delete_palworld_admin_password(&profile.id);
         }
@@ -1250,6 +1306,7 @@ async fn stop_server(
         "server.stop.begin",
         &format!("server={server_id} force={force}"),
     );
+    state.discord.stopping(&server_id);
     let result: AppResult<()> = async {
         let profile = state.store.lock().unwrap().get_server(&server_id)?;
         let graceful_command = if profile.game_adapter().is_palworld() {
@@ -1281,7 +1338,9 @@ async fn stop_server(
         )
         .await
         {
-            Ok(()) => {}
+            Ok(()) => {
+                state.discord.observe(&profile, "stopped");
+            }
             Err(AppError::NotRunning) if profile.game_adapter().is_palworld() && !force => {}
             Err(error) => return Err(error),
         }
@@ -1332,6 +1391,11 @@ async fn stop_server(
         Ok(())
     }
     .await;
+    // A refused save/shutdown is not an intentional later process exit.
+    // ForceRequired still owns a pending graceful stop and retains its intent.
+    if result.is_err() && !matches!(&result, Err(AppError::ForceRequired)) {
+        state.discord.stop_failed(&server_id);
+    }
     append_lifecycle_event(
         &app,
         if result.is_ok() {
@@ -1363,10 +1427,18 @@ async fn restart_server(
     }
     let profile_before_stop = state.store.lock().unwrap().get_server(&server_id)?;
     if process::is_running(&server_id, &state.processes) {
+        state.discord.stopping(&server_id);
         let graceful_command = if profile_before_stop.game_adapter().is_palworld() {
             if !force {
-                palworld::save_world(&profile_before_stop).await?;
-                palworld::shutdown(&profile_before_stop, 2).await?;
+                let shutdown_result = async {
+                    palworld::save_world(&profile_before_stop).await?;
+                    palworld::shutdown(&profile_before_stop, 2).await
+                }
+                .await;
+                if let Err(error) = shutdown_result {
+                    state.discord.stop_failed(&server_id);
+                    return Err(error);
+                }
             }
             None
         } else {
@@ -1382,10 +1454,17 @@ async fn restart_server(
         )
         .await;
         match stop_result {
-            Ok(()) => {}
+            Ok(()) => {
+                state.discord.observe(&profile_before_stop, "stopped");
+            }
             Err(AppError::NotRunning)
                 if profile_before_stop.game_adapter().is_palworld() && !force => {}
-            Err(error) => return Err(error),
+            Err(error) => {
+                if !matches!(&error, AppError::ForceRequired) {
+                    state.discord.stop_failed(&server_id);
+                }
+                return Err(error);
+            }
         }
         let publications = state.publications.clone();
         let cleanup_id = server_id.clone();
@@ -1729,6 +1808,7 @@ async fn get_runtime_status(
     // A graceful stop owns the Minecraft process until saving has completed.
     // Do not race the explicit stop command by spawning duplicate publication
     // and tunnel cleanup tasks from every status poll while state=stopping.
+    state.discord.observe(&profile, &runtime.state);
     let should_cleanup = should_cleanup_external_access(&runtime.state);
     if should_cleanup && invite::is_published(&server_id, &state.publications) {
         let publications = state.publications.clone();
@@ -4745,6 +4825,9 @@ fn start_server_automation_monitor(app: tauri::AppHandle) {
                         .collect();
                     status.palworld = Some(snapshot.metrics);
                 }
+                app.state::<AppState>()
+                    .discord
+                    .observe(&profile, &status.state);
                 let previous_state =
                     previous_states.insert(profile.id.clone(), status.state.clone());
                 if status.state == "running"
@@ -4842,10 +4925,12 @@ fn start_server_automation_monitor(app: tauri::AppHandle) {
                             "server.auto-stop.begin",
                             &format!("server={}", profile.id),
                         );
+                        app.state::<AppState>().discord.stopping(&profile.id);
                         let graceful_command = if profile.game_adapter().is_palworld() {
                             if palworld::save_world(&profile).await.is_err()
                                 || palworld::shutdown(&profile, 2).await.is_err()
                             {
+                                app.state::<AppState>().discord.stop_failed(&profile.id);
                                 append_lifecycle_event(
                                     &app,
                                     "server.auto-stop.palworld-rest-failed",
@@ -4857,7 +4942,7 @@ fn start_server_automation_monitor(app: tauri::AppHandle) {
                         } else {
                             Some("stop")
                         };
-                        if process::stop(
+                        let stop_result = process::stop(
                             &app,
                             &profile.id,
                             false,
@@ -4865,9 +4950,9 @@ fn start_server_automation_monitor(app: tauri::AppHandle) {
                             &processes,
                             &stopping_servers,
                         )
-                        .await
-                        .is_ok()
-                        {
+                        .await;
+                        if stop_result.is_ok() {
+                            app.state::<AppState>().discord.observe(&profile, "stopped");
                             append_lifecycle_event(
                                 &app,
                                 "server.auto-stop.tunnel-begin",
@@ -4914,6 +4999,9 @@ fn start_server_automation_monitor(app: tauri::AppHandle) {
                                 &format!("server={}", profile.id),
                             );
                         } else {
+                            if !matches!(&stop_result, Err(AppError::ForceRequired)) {
+                                app.state::<AppState>().discord.stop_failed(&profile.id);
+                            }
                             append_lifecycle_event(
                                 &app,
                                 "server.auto-stop.failed",
@@ -5022,6 +5110,9 @@ pub fn run() {
             let audit_dir = data_dir.join("audit");
             let state = AppState {
                 store,
+                registration: tokio::sync::Mutex::new(()),
+                membership: membership::MembershipService::default(),
+                discord: discord_notifications::DiscordService::default(),
                 server_operations: ServerOperationCoordinator::default(),
                 client: http_client()
                     .map_err(|error| Box::<dyn std::error::Error>::from(error.to_string()))?,
@@ -5042,9 +5133,19 @@ pub fn run() {
             };
             app.manage(state);
             start_server_automation_monitor(app.handle().clone());
+            discord_notifications::DiscordService::start_worker(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            membership::membership_status,
+            membership::membership_set_theme,
+            membership::membership_set_preview,
+            membership::membership_feature_available,
+            discord_notifications::discord_notification_status,
+            discord_notifications::discord_save_destination,
+            discord_notifications::discord_set_notifications,
+            discord_notifications::discord_delete_destination,
+            discord_notifications::discord_test_notification,
             quit_app,
             account_browser_auth_start,
             account_browser_auth_poll,
@@ -5268,6 +5369,80 @@ mod tests {
             settings: BasicSettings::default(),
             palworld_settings: None,
         }
+    }
+
+    #[test]
+    fn registered_limit_is_atomic_and_grandfathered_data_remains_usable() {
+        let root =
+            std::env::temp_dir().join(format!("tomonode-membership-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let store = Arc::new(Mutex::new(
+            crate::store::Store::open(&root.join("test.sqlite3")).unwrap(),
+        ));
+        let free = crate::membership::MembershipView::free("free");
+        for n in 0..2 {
+            store
+                .lock()
+                .unwrap()
+                .insert_registered_server(
+                    &profile(&format!("s{n}"), "Registered", 25565 + n),
+                    &free,
+                )
+                .unwrap();
+        }
+        let attempts: Vec<_> = (2..8)
+            .map(|n| {
+                let store = store.clone();
+                let free = free.clone();
+                std::thread::spawn(move || {
+                    store
+                        .lock()
+                        .unwrap()
+                        .insert_registered_server(
+                            &profile(&format!("s{n}"), "Concurrent", 25565 + n),
+                            &free,
+                        )
+                        .is_ok()
+                })
+            })
+            .collect();
+        assert_eq!(
+            attempts
+                .into_iter()
+                .filter_map(|h| h.join().ok())
+                .filter(|ok| *ok)
+                .count(),
+            1
+        );
+        assert_eq!(store.lock().unwrap().list_servers().unwrap().len(), 3);
+        let mut paid = free.clone();
+        paid.plan = "supporter".into();
+        paid.server_limit = None;
+        for (n, kind) in [(8, "bedrock"), (9, "palworld"), (10, "forge")] {
+            let mut value = profile(&format!("s{n}"), "Paid", 25565 + n);
+            value.server_type = kind.into();
+            store
+                .lock()
+                .unwrap()
+                .insert_registered_server(&value, &paid)
+                .unwrap();
+        }
+        let world = root.join("keep-world.dat");
+        std::fs::write(&world, b"existing-world").unwrap();
+        assert!(
+            store
+                .lock()
+                .unwrap()
+                .insert_registered_server(&profile("denied", "Denied", 26000), &free)
+                .is_err()
+        );
+        // Changing plans does not touch rows or files. Unregistering is DB-only.
+        assert_eq!(store.lock().unwrap().list_servers().unwrap().len(), 6);
+        store.lock().unwrap().delete_server("s8").unwrap();
+        assert_eq!(std::fs::read(&world).unwrap(), b"existing-world");
+        assert!(store.lock().unwrap().get_server("s9").is_ok());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

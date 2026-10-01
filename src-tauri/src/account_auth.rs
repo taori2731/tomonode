@@ -1506,10 +1506,26 @@ pub async fn account_load_session(
     Ok(Some(profile))
 }
 
+pub(crate) fn membership_session_token() -> AppResult<Option<String>> {
+    Ok(load_session()?.map(|session| session.access_token))
+}
+pub(crate) fn membership_api_endpoint(base: &str) -> AppResult<Url> {
+    api_endpoint(base, "v1/membership/lease")
+}
+
 #[tauri::command]
 pub async fn account_logout(api_base_url: String, state: State<'_, AppState>) -> AppResult<()> {
     let session = load_session()?;
     let clear_result = clear_session();
+    let _ = state.membership.clear();
+    {
+        let _dispatch = state.discord.dispatch_lock.lock().await;
+        if let Ok(profiles) = state.store.lock().unwrap().list_servers() {
+            for profile in profiles {
+                let _ = state.discord.disable(&profile.id);
+            }
+        }
+    }
     if let Some(session) = session {
         if let Ok(url) = api_endpoint(&api_base_url, "v1/auth/logout") {
             let _ = state
