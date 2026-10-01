@@ -15,7 +15,9 @@ export interface MembershipView {
   billingEnabled: boolean;
 }
 export interface DiscordEvents { started: boolean; stopped: boolean; crashed: boolean }
-export interface DiscordView { registered: boolean; enabled: boolean; events: DiscordEvents; destinationId: string | null; lastResult: string }
+export type DiscordMentionMode = "role" | "here" | "everyone";
+export interface DiscordMentions { enabled: boolean; mode: DiscordMentionMode; roleId: string }
+export interface DiscordView { registered: boolean; enabled: boolean; events: DiscordEvents; mentions: DiscordMentions; destinationId: string | null; lastResult: string }
 export const memberThemes = [
   { id: "midnight", name: "Midnight Harbor", description: "深い青と澄んだ水色", background: "#0a162a", accent: "#79cefa" },
   { id: "orchid", name: "Quiet Orchid", description: "落ち着いた紫と柔らかなライラック", background: "#20182c", accent: "#d3b6ff" },
@@ -34,7 +36,7 @@ export function useMembership() {
     // Test harnesses for unrelated screens can omit the optional new command.
     if (!backend.membershipStatus) return;
     try { setMember(await backend.membershipStatus(force)); setError(""); }
-    catch { setError("会員資格の再確認に失敗しました。既存サーバーは引き続き利用できます。"); }
+    catch { setError("membership.refresh_failed"); }
   }, []);
   useEffect(() => {
     void refresh();

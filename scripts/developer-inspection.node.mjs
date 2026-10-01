@@ -84,14 +84,22 @@ test("accepts only authentication-free HTTPS release URLs", () => {
   assert.equal(isSafeUpdateUrl("https://example.com/latest.json#latest"), false);
 });
 
-test("keeps the 0.5.1 release workflow on the Tauri-only signing path", async () => {
+test("keeps the current release guarded, Tauri-signed, and draft-only by default", async () => {
   const workflow = await readFile(path.join(process.cwd(), ".github", "workflows", "sign-windows-release.yml"), "utf8");
+  const manifest = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8"));
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
   assert.doesNotMatch(workflow, /signpath|authenticode/i);
   assert.match(workflow, /TAURI_SIGNING_PRIVATE_KEY/);
   assert.match(workflow, /RELEASE_REPO_TOKEN/);
-  assert.match(workflow, /RELEASE_VERSION -ne "0\.5\.1"/);
-  assert.match(workflow, /RELEASE_TAG -ne "v0\.5\.1"/);
+  assert.ok(workflow.includes(`RELEASE_VERSION -ne "${manifest.version}"`));
+  assert.ok(workflow.includes(`RELEASE_TAG -ne "v${manifest.version}"`));
+  assert.match(workflow, /publish:\s*description:[^\n]+\s*required: true\s*type: boolean\s*default: false/);
+  assert.match(workflow, /name: Publish the verified Draft as Latest\s*if: \$\{\{ inputs\.publish \}\}/);
+  assert.match(workflow, /name: Re-download and verify the public Latest feed and assets\s*if: \$\{\{ inputs\.publish \}\}/);
   assert.match(workflow, /--draft/);
+  assert.match(workflow, /--pattern "SHA256SUMS\.txt"/);
+  assert.match(workflow, /-ChecksumPath \$draftChecksum/);
+  assert.match(workflow, /artifacts\/draft-download\/SHA256SUMS\.txt/);
   assert.match(workflow, /--draft=false/);
   assert.match(workflow, /--latest/);
   assert.match(workflow, /TomoNode_\$\{env:RELEASE_VERSION\}_x64-setup\.exe/);
