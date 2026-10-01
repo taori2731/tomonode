@@ -113,6 +113,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 npm run test:ui
 node scripts/account-settings-smoke.cjs
+node scripts/supporter-ui-smoke.cjs
 npm run test:ui:performance
 
 # cloudflare/account-api
