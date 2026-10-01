@@ -45,8 +45,13 @@ let browser;
 
   await page.evaluate(() => {
     window.__tomonodeLongTasks = [];
+    window.__tomonodeLongTaskDetails = [];
+    window.__tomonodeReadyAt = performance.now();
     new PerformanceObserver((entries) => {
-      for (const entry of entries.getEntries()) window.__tomonodeLongTasks.push(entry.duration);
+      for (const entry of entries.getEntries()) {
+        window.__tomonodeLongTasks.push(entry.duration);
+        window.__tomonodeLongTaskDetails.push({ startTime: entry.startTime, duration: entry.duration });
+      }
     }).observe({ type: "longtask", buffered: true });
   });
 
@@ -78,12 +83,14 @@ let browser;
   await switchSection("ホーム", "Survival World");
 
   const longTasks = await page.evaluate(() => window.__tomonodeLongTasks ?? []);
+  const timing = await page.evaluate(() => ({ readyAt: window.__tomonodeReadyAt, tasks: window.__tomonodeLongTaskDetails }));
   const report = {
     generatedAt: new Date().toISOString(),
     cpuThrottleRate: 6,
     viewport: { width: 1280, height: 720 },
     maximumSwitchMs: Math.max(...results.map((result) => result.durationMs)),
     switches: results,
+    timing,
     longTasks: {
       count: longTasks.length,
       over500Ms: longTasks.filter((duration) => duration > 500).length,

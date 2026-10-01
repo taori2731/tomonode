@@ -144,6 +144,9 @@ jobs:
       - name: Run account settings UI smoke test
         run: node scripts/account-settings-smoke.cjs
 
+      - name: Run isolated Supporter theme and logout UI smoke test
+        run: node scripts/supporter-ui-smoke.cjs
+
       - name: Build application frontend
         run: npm run build
 
