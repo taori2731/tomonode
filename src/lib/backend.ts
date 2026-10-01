@@ -1,7 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import packageMetadata from "../../package.json";
 import { brand } from "./brand";
-import type { MembershipView, DiscordEvents, DiscordView } from "./membership";
+import type { MembershipView, DiscordEvents, DiscordMentions, DiscordView } from "./membership";
+import type { AppLocale } from "./i18n";
 import type {
   CreateServerInput,
   CrossplayInstallInput,
@@ -307,11 +308,12 @@ export const backend = {
   membershipSetTheme: (theme: string | null) => desktopOr<MembershipView>("membership_set_theme", { theme }, () => Promise.reject(new Error("限定テーマの適用は会員資格を確認したWindows版で利用できます"))),
   membershipSetPreview: (enabled: boolean) => desktopOr<MembershipView>("membership_set_preview", { enabled }, () => Promise.reject(new Error("先行体験にはSupporter資格が必要です"))),
   membershipFeatureAvailable: (featureId: string) => desktopOr<boolean>("membership_feature_available", { featureId }, () => false),
-  discordStatus: (serverId: string) => desktopOr<DiscordView>("discord_notification_status", { serverId }, () => ({ registered: false, enabled: false, events: { started: true, stopped: true, crashed: true }, destinationId: null, lastResult: "not_sent" })),
-  discordSaveDestination: (serverId: string, webhookUrl: string) => desktopOr<DiscordView>("discord_save_destination", { serverId, webhookUrl }, () => Promise.reject(new Error("Webhookの保存は会員資格を確認したWindows版で利用できます"))),
-  discordSetNotifications: (serverId: string, enabled: boolean, events: DiscordEvents) => desktopOr<DiscordView>("discord_set_notifications", { serverId, enabled, events }, () => Promise.reject(new Error("Discord通知はWindows版で利用できます"))),
-  discordDeleteDestination: (serverId: string) => desktopOr<DiscordView>("discord_delete_destination", { serverId }, () => ({ registered: false, enabled: false, events: { started: false, stopped: false, crashed: false }, destinationId: null, lastResult: "not_sent" })),
-  discordTestNotification: (serverId: string, confirmed: boolean) => desktopOr<DiscordView>("discord_test_notification", { serverId, confirmed }, () => Promise.reject(new Error("ブラウザデモからDiscordへは送信しません"))),
+  discordStatus: (serverId: string) => desktopOr<DiscordView>("discord_notification_status", { serverId }, () => ({ registered: false, enabled: false, events: { started: true, stopped: true, crashed: true }, mentions: { enabled: true, mode: "everyone", roleId: "" }, destinationId: null, lastResult: "not_sent" })),
+  discordSetLocale: (locale: AppLocale) => desktopOr<void>("discord_set_locale", { locale }, () => undefined),
+  discordSaveDestination: (serverId: string, webhookUrl: string, mentions: DiscordMentions, confirmed: boolean) => desktopOr<DiscordView>("discord_save_destination", { serverId, webhookUrl, mentions, confirmed }, () => Promise.reject(new Error("discord.error.qualification_required"))),
+  discordSetNotifications: (serverId: string, enabled: boolean, events: DiscordEvents, mentions: DiscordMentions, confirmed: boolean) => desktopOr<DiscordView>("discord_set_notifications", { serverId, enabled, events, mentions, confirmed }, () => Promise.reject(new Error("discord.error.qualification_required"))),
+  discordDeleteDestination: (serverId: string, confirmed: boolean) => desktopOr<DiscordView>("discord_delete_destination", { serverId, confirmed }, () => ({ registered: false, enabled: false, events: { started: false, stopped: false, crashed: false }, mentions: { enabled: true, mode: "everyone", roleId: "" }, destinationId: null, lastResult: "not_sent" })),
+  discordTestNotification: (serverId: string, confirmed: boolean) => desktopOr<DiscordView>("discord_test_notification", { serverId, confirmed }, () => Promise.reject(new Error("discord.error.qualification_required"))),
   isDesktop: inDesktop,
   getAppVersion: () => inDesktop ? import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()) : Promise.resolve(packageMetadata.version),
   accountLoadSession: () => desktopOr<AccountProfile | null>("account_load_session", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => null),

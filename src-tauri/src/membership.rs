@@ -151,6 +151,31 @@ fn verify(
     }
     Ok(claims)
 }
+
+// Only the isolated test runner can supply an ephemeral pin. This is absent
+// from desktop builds and never reads or writes the real account/keyring.
+#[cfg(test)]
+pub(crate) fn verify_lab_lease(
+    lease: &serde_json::Value,
+    pin: &serde_json::Value,
+    token: &str,
+    allow_test: bool,
+) -> bool {
+    let (Ok(lease), Ok(pin)) = (
+        serde_json::from_value::<SignedLease>(lease.clone()),
+        serde_json::from_value::<Pin>(pin.clone()),
+    ) else {
+        return false;
+    };
+    verify(
+        &lease,
+        token,
+        chrono::Utc::now().timestamp(),
+        &pin,
+        allow_test,
+    )
+    .is_ok()
+}
 impl MembershipService {
     pub fn clear(&self) -> AppResult<()> {
         *self.cached.lock().unwrap() = None;

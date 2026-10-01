@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { hasTranslationCatalog, loadTranslationCatalog } from "./translationCatalog";
+import { discordText } from "./discordLocale";
 
 export type AppLocale = "en" | "ja" | "zh-CN" | "zh-TW" | "ko" | "es" | "de" | "fr" | "pt-BR";
 export type LanguagePreference = "system" | AppLocale;
@@ -154,29 +155,90 @@ export function translate(locale: AppLocale, key: MessageKey) {
 type I18nValue = {
   preference: LanguagePreference;
   locale: AppLocale;
-  setPreference: (preference: LanguagePreference) => void;
+  setPreference: (preference: LanguagePreference) => Promise<boolean>;
+  discordLocaleSyncReady: boolean;
+  discordLocaleSyncFailed: boolean;
+  resyncDiscordLocale: () => Promise<void>;
   t: (key: MessageKey) => string;
 };
 
 const defaultLocale = detectSystemLocale();
-const I18nContext = createContext<I18nValue>({ preference: "system", locale: defaultLocale, setPreference: () => undefined, t: (key) => dictionaries[defaultLocale][key] });
+const I18nContext = createContext<I18nValue>({ preference: "system", locale: defaultLocale, setPreference: async () => false, discordLocaleSyncReady: false, discordLocaleSyncFailed: false, resyncDiscordLocale: async () => undefined, t: (key) => dictionaries[defaultLocale][key] });
 
 export function I18nProvider({ children }: { children: ReactNode }) {
-  const [preference, setPreference] = useState<LanguagePreference>(readLanguagePreference);
+  const [preference, setPreferenceState] = useState<LanguagePreference>(readLanguagePreference);
   const [systemLocale, setSystemLocale] = useState<AppLocale>(detectSystemLocale);
   const desiredLocale = preference === "system" ? systemLocale : preference;
   const [locale, setLocale] = useState<AppLocale>(desiredLocale);
   const [catalogRevision, setCatalogRevision] = useState(() => hasTranslationCatalog(desiredLocale) ? 1 : 0);
+  const [discordLocaleSyncReady, setDiscordLocaleSyncReady] = useState(false);
+  const [discordLocaleSyncFailed, setDiscordLocaleSyncFailed] = useState(false);
+  const localeSyncRevision = useRef(0);
+  const localeSyncQueue = useRef<Promise<void>>(Promise.resolve());
+
+  const syncDiscordLocale = useCallback((nextLocale: AppLocale) => {
+    const revision = ++localeSyncRevision.current;
+    setDiscordLocaleSyncReady(false);
+    const request = localeSyncQueue.current.catch(() => undefined).then(async () => {
+      const { backend } = await import("./backend");
+      await backend.discordSetLocale(nextLocale);
+    });
+    localeSyncQueue.current = request;
+    return request.then(() => {
+      if (revision !== localeSyncRevision.current) return false;
+      setDiscordLocaleSyncReady(true);
+      setDiscordLocaleSyncFailed(false);
+      return true;
+    }).catch((error: unknown) => {
+      if (revision !== localeSyncRevision.current) return false;
+      setDiscordLocaleSyncReady(false);
+      setDiscordLocaleSyncFailed(true);
+      throw error;
+    });
+  }, []);
+
+  const setPreference = useCallback(async (next: LanguagePreference) => {
+    const nextLocale = next === "system" ? detectSystemLocale() : next;
+    const request = syncDiscordLocale(nextLocale);
+    const revision = localeSyncRevision.current;
+    const synchronized = await request;
+    if (synchronized && revision === localeSyncRevision.current) {
+      setPreferenceState(next);
+      return true;
+    }
+    return false;
+  }, [syncDiscordLocale]);
+
+  const resyncDiscordLocale = useCallback(async () => {
+    const nextLocale = preference === "system" ? detectSystemLocale() : locale;
+    const request = syncDiscordLocale(nextLocale);
+    const revision = localeSyncRevision.current;
+    const synchronized = await request;
+    if (synchronized && revision === localeSyncRevision.current && preference === "system") setSystemLocale(nextLocale);
+  }, [locale, preference, syncDiscordLocale]);
+
+  useEffect(() => {
+    void syncDiscordLocale(locale).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, preference);
   }, [preference]);
 
   useEffect(() => {
-    const update = () => setSystemLocale(detectSystemLocale());
+    const update = () => {
+      if (preference !== "system") return;
+      const nextLocale = detectSystemLocale();
+      if (nextLocale === systemLocale) return;
+      const request = syncDiscordLocale(nextLocale);
+      const revision = localeSyncRevision.current;
+      void request.then((synchronized) => {
+        if (synchronized && revision === localeSyncRevision.current) setSystemLocale(nextLocale);
+      }).catch(() => undefined);
+    };
     window.addEventListener("languagechange", update);
     return () => window.removeEventListener("languagechange", update);
-  }, []);
+  }, [preference, systemLocale, syncDiscordLocale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -216,8 +278,11 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     };
   }, [catalogRevision, locale]);
 
-  const value = useMemo<I18nValue>(() => ({ preference, locale, setPreference, t: (key) => translate(locale, key) }), [locale, preference]);
-  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
+  const value = useMemo<I18nValue>(() => ({ preference, locale, setPreference, discordLocaleSyncReady, discordLocaleSyncFailed, resyncDiscordLocale, t: (key) => translate(locale, key) }), [locale, preference, setPreference, discordLocaleSyncReady, discordLocaleSyncFailed, resyncDiscordLocale]);
+  return <I18nContext.Provider value={value}>
+    {discordLocaleSyncFailed ? <div className="locale-sync-warning" role="alert"><span>{discordText(locale, "localeSyncFailed")}</span><button type="button" onClick={() => void resyncDiscordLocale().catch(() => undefined)}>{discordText(locale, "retryLocaleSync")}</button></div> : null}
+    {children}
+  </I18nContext.Provider>;
 }
 
 export function useI18n() {

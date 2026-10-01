@@ -35,6 +35,8 @@ mod server_diagnosis;
 mod server_files;
 mod settings;
 mod store;
+#[cfg(test)]
+mod supporter_lab;
 mod tunnel;
 mod update_safety;
 mod windows_process;
@@ -5142,6 +5144,7 @@ pub fn run() {
             membership::membership_set_preview,
             membership::membership_feature_available,
             discord_notifications::discord_notification_status,
+            discord_notifications::discord_set_locale,
             discord_notifications::discord_save_destination,
             discord_notifications::discord_set_notifications,
             discord_notifications::discord_delete_destination,

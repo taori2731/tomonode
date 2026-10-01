@@ -276,6 +276,8 @@ a { color: var(--accent); }
 .choice span { color: var(--muted); font-size: 13px; }
 .two-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 17px; }
 .info-callout, .warning-callout, .compatibility { display: flex; align-items: flex-start; gap: 12px; padding: 15px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg-soft); color: var(--muted); font-size: 13px; line-height: 1.55; }
+.locale-sync-warning { position: fixed; z-index: 10000; top: 12px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; max-width: min(760px, calc(100vw - 24px)); padding: 12px 14px; border: 1px solid var(--danger); border-radius: 9px; background: var(--bg-panel); color: var(--text); box-shadow: 0 8px 32px #0008; font-size: 13px; line-height: 1.5; }
+.locale-sync-warning button { flex: 0 0 auto; }
 .compatibility.good { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: var(--accent-soft); }
 .compatibility.bad, .warning-callout { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 42%, var(--border)); }
 .compatibility > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
