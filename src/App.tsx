@@ -23,6 +23,8 @@ import { BACKGROUND_STATUS_POLL_INTERVAL_MS, isServerWorkspaceVisible, selectedL
 import { sameLogSnapshot } from "./lib/logs";
 import { sameRuntimeStatus } from "./lib/runtimeStatus";
 import { MigrationNoticeDialog } from "./components/MigrationNoticeDialog";
+import { useMembership } from "./lib/membership";
+import { supportConfig } from "./lib/supporterConfig";
 import type { AccountProfile } from "./lib/accountTypes";
 import type { AppSection, AppearanceSettings, DeleteServerResult, LogEntry, MonitoringSettings, RuntimeStatus, ServerProfile, TabId, ThemeMode } from "./types";
 
@@ -105,6 +107,8 @@ function useTheme() {
 
 export function AppContent() {
   const theme = useTheme();
+  const { member, refresh: refreshMembership } = useMembership();
+  const memberTheme = member?.plan === "supporter" ? member.theme : null;
   const { locale, t } = useI18n();
   const workspaceCopy = useMemo(() => workspaceText(locale), [locale]);
   const homeCopy = useMemo(() => homeText(locale), [locale]);
@@ -135,6 +139,8 @@ export function AppContent() {
   const [showInvite, setShowInvite] = useState(false);
   const [showCrossplayInvite, setShowCrossplayInvite] = useState(false);
   const [showAppSettings, setShowAppSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<"members" | "plan">("members");
+  const [registrationLimit, setRegistrationLimit] = useState<number | null>(null);
   const [showAccount, setShowAccount] = useState(false);
   const [accountProfile, setAccountProfile] = useState<AccountProfile | null>(null);
   const [accountProfileLoaded, setAccountProfileLoaded] = useState(false);
@@ -389,13 +395,19 @@ export function AppContent() {
     });
   }, []);
 
-  const createFromTemplate = useCallback((templateId: string) => {
-    setInitialTemplateId(templateId);
-    setShowWizard(true);
-  }, []);
-  const openCreate = useCallback(() => { setInitialTemplateId(undefined); setShowWizard(true); }, []);
-  const openImport = useCallback(() => setShowImport(true), []);
-  const openAppSettings = useCallback(() => setShowAppSettings(true), []);
+  const checkAddition = useCallback(async (next: () => void) => {
+    try {
+      const current = backend.membershipStatus ? await backend.membershipStatus() : member;
+      const count = current?.registeredCount ?? servers.length;
+      if (current?.plan !== "supporter" && count >= supportConfig.freeServerLimit) { setRegistrationLimit(count); return; }
+      next();
+    } catch { setError("会員状態を確認できません。もう一度お試しください。既存サーバーは利用できます。"); }
+  }, [member, servers.length]);
+  const createFromTemplate = useCallback((templateId: string) => { void checkAddition(() => { setInitialTemplateId(templateId); setShowWizard(true); }); }, [checkAddition]);
+  const openCreate = useCallback(() => { void checkAddition(() => { setInitialTemplateId(undefined); setShowWizard(true); }); }, [checkAddition]);
+  const openImport = useCallback(() => { void checkAddition(() => setShowImport(true)); }, [checkAddition]);
+  const openAppSettings = useCallback(() => { setSettingsSection("members"); setShowAppSettings(true); }, []);
+  useEffect(() => { void refreshMembership(); }, [servers.length, refreshMembership]);
   const openExtensions = useCallback(() => selected ? openServer(selected.id, "extensions") : setToast(t("selectServerFirst")), [openServer, selected, t]);
 
   const serverNavigation = (
@@ -405,10 +417,10 @@ export function AppContent() {
   );
 
   return (
-    <div className="app" data-product-name={brand.productName} data-theme={theme.resolved} data-accent={theme.appearance.accent} data-icon-scale={theme.appearance.iconScale} style={customAccentStyle(theme.appearance)}>
+    <div className="app" data-product-name={brand.productName} data-theme={memberTheme ? "dark" : theme.resolved} data-member-theme={memberTheme ?? undefined} data-accent={theme.appearance.accent} data-icon-scale={theme.appearance.iconScale} style={memberTheme ? undefined : customAccentStyle(theme.appearance)}>
       <ExternalLinkHandler onError={setError} />
       <header className="titlebar" aria-label={brand.productName}>
-        <img className="brand-mark" src={theme.resolved === "dark" ? "/assets/tomonode-icon-bg-black.png" : "/assets/tomonode-icon-bg-white.png"} alt="" aria-hidden="true" />
+        <img className="brand-mark" src={memberTheme || theme.resolved === "dark" ? "/assets/tomonode-icon-bg-black.png" : "/assets/tomonode-icon-bg-white.png"} alt="" aria-hidden="true" />
         <strong>{brand.productName}</strong>
         <span className="unofficial-label">{t("unofficial")}</span>
         <GlobalSearch servers={servers} onOpenServer={openServer} onSection={navigateSection} onSettings={openAppSettings} />
@@ -423,6 +435,7 @@ export function AppContent() {
 
       <div className="app-body">
         <Sidebar servers={servers} serverIcons={serverIcons} selectedId={selectedId} statuses={statuses} accountProfile={accountProfile} onAccountOpen={() => setShowAccount(true)} activeSection={activeSection} availableTabs={availableTabs} onSectionNavigate={navigateSection} onSelect={openServer} onCreate={openCreate} onImport={openImport} onDelete={setDeleteTarget} onAppSettings={openAppSettings} />
+        <span className="membership-count" aria-label={locale === "ja" ? "登録済みサーバー数" : "Registered servers"}>{servers.length} / {member?.plan === "supporter" ? locale === "ja" ? "無制限" : "Unlimited" : locale === "ja" ? `${supportConfig.freeServerLimit}個・Free` : `${supportConfig.freeServerLimit} · Free`}</span>
         <nav className="mobile-navigation" aria-label={workspaceCopy.servers}>
           <label><Icon name="server" size={17}/><select aria-label={t("serverList")} value={selectedId ?? ""} onChange={(event) => event.target.value && openServer(event.target.value)}><option value="" disabled>{t("serverList")}</option>{servers.map((server) => <option key={server.id} value={server.id}>{server.name}</option>)}</select></label>
           <div>
@@ -493,7 +506,8 @@ export function AppContent() {
       {showInvite && selected ? selectedIsPalworld ? <PalworldInviteDialog key={selected.id} server={selected} onClose={() => setShowInvite(false)} notify={setToast} /> : <InviteDialog server={selected} status={selectedStatus} onClose={() => setShowInvite(false)} notify={setToast} /> : null}
       {showCrossplayInvite && selected?.serverType === "paper" ? <CrossplayInviteDialog server={selected} status={selectedStatus} onClose={() => setShowCrossplayInvite(false)} notify={setToast} /> : null}
       {showAccount ? <AccountDialog locale={locale} initialProfile={accountProfile} profileLoaded={accountProfileLoaded} onProfileChange={updateAccountProfile} onClose={() => setShowAccount(false)} /> : null}
-      {showAppSettings ? <AppSettingsDialog server={selected} status={selected ? selectedStatus : undefined} servers={servers} statuses={statuses} onStatusesChanged={(values) => setStatuses((current) => ({ ...current, ...values }))} onAppearanceChanged={theme.setAppearance} onClose={() => setShowAppSettings(false)} notify={setToast} fail={setError} /> : null}
+      {showAppSettings ? <AppSettingsDialog initialSection={settingsSection} onAccount={() => { setShowAppSettings(false); setShowAccount(true); }} server={selected} status={selected ? selectedStatus : undefined} servers={servers} statuses={statuses} onStatusesChanged={(values) => setStatuses((current) => ({ ...current, ...values }))} onAppearanceChanged={theme.setAppearance} onClose={() => setShowAppSettings(false)} notify={setToast} fail={setError} /> : null}
+      {registrationLimit !== null ? <div className="modal-backdrop"><section className="wizard limit-dialog" role="dialog" aria-modal="true" aria-labelledby="registration-limit-title"><h2 id="registration-limit-title">Freeプランでは3個まで管理できます</h2><p>現在の登録数：{registrationLimit} / 3個</p><p>登録済みサーバーの起動・保存・バックアップは引き続き利用できます。登録解除はフォルダーやワールドの削除とは別です。</p><button type="button" onClick={() => setRegistrationLimit(null)}>閉じる</button><button type="button" onClick={() => { setRegistrationLimit(null); setSettingsSection("plan"); setShowAppSettings(true); }}>応援プランを見る（受付準備中）</button></section></div> : null}
       {deleteTarget ? <DeleteServerDialog server={deleteTarget} status={statuses[deleteTarget.id] ?? stoppedStatus(deleteTarget)} onClose={() => setDeleteTarget(undefined)} fail={setError} onDeleted={(result: DeleteServerResult) => {
         const next = servers.filter((item) => item.id !== deleteTarget.id);
         setServers(next);

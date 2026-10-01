@@ -1,29 +1,31 @@
 /**
- * Single switch for the optional GitHub Sponsors flow.
+ * Shared Stripe supporter plan for the desktop app and website.
  *
- * Keep this disabled until the GitHub Sponsors recipient setup and listing
- * review are complete. The URLs are fixed constants so UI callers never
- * accept an arbitrary external destination.
+ * Enable only after the monthly Price, benefits, terms, Checkout, signed
+ * webhooks and Customer Portal have been verified in Stripe test mode.
+ * This is the planned price; configure Stripe's Price separately on the server.
+ * No secret keys or Checkout URLs belong here.
  */
 export type SupporterConfig = {
   enabled: boolean;
-  sponsorUrl: string;
-  setupUrl: string;
+  provider: "stripe";
+  monthlyAmount: number;
+  currency: "JPY";
+  freeServerLimit: number;
 };
-
-export const GITHUB_SPONSORS_URL = "https://github.com/sponsors/taori2731";
-export const GITHUB_SPONSORS_SETUP_URL = "https://docs.github.com/ja/sponsors/receiving-sponsorships-through-github-sponsors/setting-up-github-sponsors-for-your-personal-account";
 
 export const supportConfig: SupporterConfig = {
   enabled: false,
-  sponsorUrl: GITHUB_SPONSORS_URL,
-  setupUrl: GITHUB_SPONSORS_SETUP_URL,
+  provider: "stripe",
+  monthlyAmount: 500,
+  currency: "JPY",
+  freeServerLimit: 3,
 };
 
-export const supportExternalUrls = [GITHUB_SPONSORS_URL, GITHUB_SPONSORS_SETUP_URL] as const;
-
-export type SupportExternalUrl = (typeof supportExternalUrls)[number];
-
-export function isSupportExternalUrl(value: string): value is SupportExternalUrl {
-  return supportExternalUrls.includes(value as SupportExternalUrl);
+export function formatSupportMonthlyAmount(locale: string) {
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: supportConfig.currency,
+    maximumFractionDigits: 0,
+  }).format(supportConfig.monthlyAmount);
 }

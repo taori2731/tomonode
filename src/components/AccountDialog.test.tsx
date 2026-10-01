@@ -208,8 +208,9 @@ describe("AccountDialog", () => {
 
     fireEvent.click(within(menu).getByRole("tab", { name: copy.plan }));
     expect(within(menu).getByRole("tab", { name: copy.plan })).toHaveAttribute("aria-selected", "true");
-    expect(within(menu).getByText(settingsCopy.supporterPending)).toBeInTheDocument();
-    expect(within(menu).getByRole("button", { name: new RegExp(copy.seePlans) })).toBeDisabled();
+    expect(within(menu).getByText("Stripeの応援プランは準備中")).toBeInTheDocument();
+    expect(within(menu).getByText("￥500 / 月")).toBeInTheDocument();
+    expect(within(menu).getByRole("button", { name: "本番受付は準備中" })).toBeDisabled();
   });
 
   it("requests email change from Profile and Security without changing the active profile email", async () => {

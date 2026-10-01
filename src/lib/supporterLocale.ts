@@ -1,5 +1,6 @@
 import type { AppLocale } from "./i18n";
 import { brand } from "./brand";
+import { planCopies } from "./planLocale";
 
 export type SupporterCopy = {
   advancedOperationsTitle: string;
@@ -17,8 +18,7 @@ export type SupporterCopy = {
   availableTitle: string;
   availableBody: string;
   supportButton: string;
-  setupGuideLink: string;
-  setupGuideBody: string;
+  monthlyPrice: string;
   afterStoppingBody: string;
 };
 
@@ -42,13 +42,12 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "開発中の機能へのフィードバック参加",
       "限定デザインやアイコンなどの外観",
     ],
-    pendingTitle: "支援受付は準備中",
-    pendingBody: "GitHub Sponsorsの受取設定完了後に利用可能です。現在は受取設定が完了していないため、一般向けの支援受付はまだ始まっていません。このアプリで決済情報を入力・保存することはありません。",
-    availableTitle: "GitHub Sponsorsで支援できます",
-    availableBody: "GitHub Sponsorsのページで、1回限りまたは月額の支援を選べます。決済はGitHub側で行われます。",
-    supportButton: "GitHub Sponsorsで支援",
-    setupGuideLink: "受取設定の手順（開発者向け）",
-    setupGuideBody: "GitHub Sponsorsの受取設定が完了したら、この同じURLを有効化します。",
+    pendingTitle: "Stripeの応援プランは準備中",
+    pendingBody: "月額500円を予定しています。特典と決済設定の準備が整い次第、受付を開始します。このアプリでカード情報を入力・保存することはありません。",
+    availableTitle: "Stripeの月額応援プラン",
+    availableBody: "アカウントにログインしてStripeで申し込みます。料金と請求条件は決済前に確認でき、解約・支払い方法の変更はStripeで行えます。",
+    supportButton: "Stripeで応援プランに申し込む",
+    monthlyPrice: "月額 {amount}（予定）",
     afterStoppingBody: "支援を停止した後も、安全機能、バックアップと復元、サーバーデータへのアクセスを制限しません。",
   },
   en: {
@@ -70,13 +69,12 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Participation in feedback for features in development",
       "Limited designs, icons, and other appearance options",
     ],
-    pendingTitle: "GitHub Sponsors support is being prepared",
-    pendingBody: "Available after GitHub Sponsors recipient setup is complete. The setup is not complete yet, so support is not currently being accepted. This app does not collect or store payment details.",
-    availableTitle: "Support via GitHub Sponsors",
-    availableBody: "Choose a one-time or monthly contribution on GitHub Sponsors. Payment is handled by GitHub.",
-    supportButton: "Support on GitHub Sponsors",
-    setupGuideLink: "Recipient setup guide (for maintainers)",
-    setupGuideBody: "After GitHub Sponsors recipient setup is complete, enable this same link.",
+    pendingTitle: "Stripe supporter plan is being prepared",
+    pendingBody: "A JPY 500 monthly plan is planned. Enrollment will open when benefits and payment setup are ready. This app does not collect or store card details.",
+    availableTitle: "Monthly supporter plan with Stripe",
+    availableBody: "Sign in to your account to subscribe through Stripe. Review pricing and billing terms before paying, and manage cancellation and payment methods in Stripe.",
+    supportButton: "Subscribe with Stripe",
+    monthlyPrice: "{amount} / month (planned)",
     afterStoppingBody: "Stopping support will not restrict safety tools, backup and restore, or access to server data.",
   },
   de: {
@@ -98,13 +96,12 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Feedback zu Funktionen in Entwicklung",
       "Exklusive Designs, Symbole und andere Darstellungsoptionen",
     ],
-    pendingTitle: "GitHub-Sponsors-Unterstützung wird vorbereitet",
-    pendingBody: "Nach Abschluss der Empfängereinrichtung bei GitHub Sponsors verfügbar. Die Einrichtung ist noch nicht abgeschlossen, daher werden derzeit keine Unterstützungen angenommen. Diese App erfasst oder speichert keine Zahlungsdaten.",
-    availableTitle: "Über GitHub Sponsors unterstützen",
-    availableBody: "Auf GitHub Sponsors können Sie eine einmalige oder monatliche Unterstützung auswählen. Die Zahlung wird von GitHub abgewickelt.",
-    supportButton: "Über GitHub Sponsors unterstützen",
-    setupGuideLink: "Anleitung zur Empfängereinrichtung (für Maintainer)",
-    setupGuideBody: "Nach Abschluss der GitHub-Sponsors-Empfängereinrichtung wird derselbe Link aktiviert.",
+    pendingTitle: "Stripe-Unterstützerabo in Vorbereitung",
+    pendingBody: "Ein Monatsabo für 500 JPY ist geplant. Die Anmeldung beginnt, sobald Vorteile und Zahlungsabwicklung bereit sind. Diese App erfasst oder speichert keine Kartendaten.",
+    availableTitle: "Monatliches Unterstützerabo mit Stripe",
+    availableBody: "Melde dich an, um das Abo über Stripe abzuschließen. Preis und Bedingungen werden vor der Zahlung angezeigt. Kündigung und Zahlungsmethoden verwaltest du bei Stripe.",
+    supportButton: "Abo über Stripe abschließen",
+    monthlyPrice: "{amount} / Monat (geplant)",
     afterStoppingBody: "Das Beenden der Unterstützung schränkt Sicherheitsfunktionen, Sicherung und Wiederherstellung oder den Zugriff auf Serverdaten nicht ein.",
   },
   es: {
@@ -126,13 +123,12 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Participación en los comentarios sobre funciones en desarrollo",
       "Diseños, iconos y otras opciones visuales limitadas",
     ],
-    pendingTitle: "La recepción de apoyos mediante GitHub Sponsors está en preparación",
-    pendingBody: "Estará disponible cuando se complete la configuración del destinatario en GitHub Sponsors. La configuración aún no ha terminado, por lo que todavía no se aceptan apoyos. Esta aplicación no recopila ni guarda datos de pago.",
-    availableTitle: "Apoyar mediante GitHub Sponsors",
-    availableBody: "En GitHub Sponsors puedes elegir una contribución única o mensual. GitHub gestiona el pago.",
-    supportButton: "Apoyar en GitHub Sponsors",
-    setupGuideLink: "Guía de configuración del destinatario (para mantenedores)",
-    setupGuideBody: "Cuando se complete la configuración del destinatario en GitHub Sponsors, se activará este mismo enlace.",
+    pendingTitle: "El plan de apoyo con Stripe está en preparación",
+    pendingBody: "Se prevé un plan mensual de 500 JPY. Las suscripciones comenzarán cuando las ventajas y el pago estén listos. Esta aplicación no recopila ni guarda datos de tarjeta.",
+    availableTitle: "Plan de apoyo mensual con Stripe",
+    availableBody: "Inicia sesión para suscribirte con Stripe. Consulta el precio y las condiciones antes de pagar. Gestiona la cancelación y los métodos de pago en Stripe.",
+    supportButton: "Suscribirse con Stripe",
+    monthlyPrice: "{amount} / mes (previsto)",
     afterStoppingBody: "Dejar de apoyar no limitará las herramientas de seguridad, las copias y restauraciones ni el acceso a los datos del servidor.",
   },
   fr: {
@@ -154,13 +150,12 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Participation aux retours sur les fonctions en développement",
       "Designs, icônes et autres options d’apparence limitées",
     ],
-    pendingTitle: "La réception des soutiens via GitHub Sponsors est en préparation",
-    pendingBody: "Elle sera disponible une fois la configuration du bénéficiaire GitHub Sponsors terminée. La configuration n’est pas terminée ; aucun soutien n’est donc accepté pour le moment. Cette application ne recueille ni ne stocke de données de paiement.",
-    availableTitle: "Soutenir via GitHub Sponsors",
-    availableBody: "Sur GitHub Sponsors, choisissez un soutien ponctuel ou mensuel. Le paiement est traité par GitHub.",
-    supportButton: "Soutenir sur GitHub Sponsors",
-    setupGuideLink: "Guide de configuration du bénéficiaire (pour mainteneurs)",
-    setupGuideBody: "Une fois la configuration du bénéficiaire GitHub Sponsors terminée, ce même lien sera activé.",
+    pendingTitle: "L’abonnement de soutien Stripe est en préparation",
+    pendingBody: "Un abonnement mensuel de 500 JPY est prévu. Les inscriptions ouvriront lorsque les avantages et le paiement seront prêts. Cette application ne recueille ni ne stocke de données de carte.",
+    availableTitle: "Abonnement de soutien mensuel avec Stripe",
+    availableBody: "Connectez-vous pour vous abonner avec Stripe. Vérifiez le prix et les conditions avant de payer. Gérez la résiliation et les moyens de paiement dans Stripe.",
+    supportButton: "S’abonner avec Stripe",
+    monthlyPrice: "{amount} / mois (prévu)",
     afterStoppingBody: "L’arrêt du soutien ne limitera ni les outils de sécurité, ni la sauvegarde et la restauration, ni l’accès aux données du serveur.",
   },
   ko: {
@@ -182,13 +177,12 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "개발 중인 기능에 대한 피드백 참여",
       "한정 디자인, 아이콘 및 기타 외관 옵션",
     ],
-    pendingTitle: "GitHub Sponsors 응원 접수를 준비 중입니다",
-    pendingBody: "GitHub Sponsors 수신자 설정이 완료되면 이용할 수 있습니다. 아직 설정이 완료되지 않아 현재는 응원을 받고 있지 않습니다. 이 앱은 결제 정보를 수집하거나 저장하지 않습니다.",
-    availableTitle: "GitHub Sponsors로 응원하기",
-    availableBody: "GitHub Sponsors에서 일회성 또는 월간 응원을 선택할 수 있습니다. 결제는 GitHub에서 처리합니다.",
-    supportButton: "GitHub Sponsors에서 응원하기",
-    setupGuideLink: "수신자 설정 안내 (관리자용)",
-    setupGuideBody: "GitHub Sponsors 수신자 설정이 완료되면 이 동일한 링크를 활성화합니다.",
+    pendingTitle: "Stripe 응원 플랜 준비 중",
+    pendingBody: "월 500엔을 예정하고 있습니다. 혜택과 결제 설정 준비가 완료되면 신청을 받습니다. 이 앱은 카드 정보를 수집하거나 저장하지 않습니다.",
+    availableTitle: "Stripe 월간 응원 플랜",
+    availableBody: "계정에 로그인하여 Stripe에서 신청합니다. 결제 전에 요금과 청구 조건을 확인하고 Stripe에서 해지와 결제 수단을 관리할 수 있습니다.",
+    supportButton: "Stripe에서 응원 플랜 신청",
+    monthlyPrice: "월 {amount} (예정)",
     afterStoppingBody: "응원을 중단해도 안전 기능, 백업과 복원 또는 서버 데이터 접근을 제한하지 않습니다.",
   },
   "pt-BR": {
@@ -210,13 +204,12 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "Participação em feedback sobre recursos em desenvolvimento",
       "Designs, ícones e outras opções visuais limitadas",
     ],
-    pendingTitle: "O recebimento de apoio pelo GitHub Sponsors está sendo preparado",
-    pendingBody: "Estará disponível após a conclusão da configuração do destinatário no GitHub Sponsors. A configuração ainda não foi concluída, portanto o apoio ainda não está sendo aceito. Este aplicativo não coleta nem armazena dados de pagamento.",
-    availableTitle: "Apoie pelo GitHub Sponsors",
-    availableBody: "No GitHub Sponsors, escolha uma contribuição única ou mensal. O pagamento é processado pelo GitHub.",
-    supportButton: "Apoiar no GitHub Sponsors",
-    setupGuideLink: "Guia de configuração do destinatário (para mantenedores)",
-    setupGuideBody: "Após concluir a configuração do destinatário no GitHub Sponsors, este mesmo link será ativado.",
+    pendingTitle: "O plano de apoio com Stripe está em preparação",
+    pendingBody: "Está previsto um plano mensal de 500 JPY. As inscrições abrirão quando os benefícios e o pagamento estiverem prontos. Este aplicativo não coleta nem armazena dados de cartão.",
+    availableTitle: "Plano de apoio mensal com Stripe",
+    availableBody: "Entre na conta para assinar com Stripe. Confira o preço e as condições antes de pagar. Gerencie cancelamento e formas de pagamento no Stripe.",
+    supportButton: "Assinar com Stripe",
+    monthlyPrice: "{amount} / mês (previsto)",
     afterStoppingBody: "Interromper o apoio não limitará as ferramentas de segurança, o backup e a restauração ou o acesso aos dados do servidor.",
   },
   "zh-CN": {
@@ -238,13 +231,12 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "参与开发中功能的反馈",
       "限定设计、图标和其他外观选项",
     ],
-    pendingTitle: "GitHub Sponsors 支持受理正在准备中",
-    pendingBody: "完成 GitHub Sponsors 接收方设置后即可使用。设置尚未完成，因此目前还未开始接受支持。本应用不会收集或保存支付信息。",
-    availableTitle: "通过 GitHub Sponsors 支持",
-    availableBody: "你可以在 GitHub Sponsors 中选择一次性或按月支持，付款由 GitHub 处理。",
-    supportButton: "在 GitHub Sponsors 上支持",
-    setupGuideLink: "接收方设置指南（维护者）",
-    setupGuideBody: "完成 GitHub Sponsors 接收方设置后，将启用同一个链接。",
+    pendingTitle: "Stripe 支持计划正在准备中",
+    pendingBody: "计划每月500日元。权益和支付配置准备就绪后开放订阅。本应用不会收集或存储银行卡信息。",
+    availableTitle: "Stripe 每月支持计划",
+    availableBody: "登录账户后通过 Stripe 订阅。付款前可查看价格和账单条款，并通过 Stripe 管理取消订阅和付款方式。",
+    supportButton: "通过 Stripe 订阅支持计划",
+    monthlyPrice: "每月 {amount}（计划）",
     afterStoppingBody: "停止支持后，安全功能、备份与恢复以及服务器数据访问都不会受到限制。",
   },
   "zh-TW": {
@@ -266,17 +258,16 @@ const copies: Record<AppLocale, SupporterCopy> = {
       "參與開發中功能的意見回饋",
       "限定設計、圖示與其他外觀選項",
     ],
-    pendingTitle: "GitHub Sponsors 支持受理正在準備中",
-    pendingBody: "完成 GitHub Sponsors 接收方設定後即可使用。目前設定尚未完成，因此尚未開始接受支持。本應用程式不會收集或儲存付款資料。",
-    availableTitle: "透過 GitHub Sponsors 支持",
-    availableBody: "你可以在 GitHub Sponsors 選擇一次性或每月支持，付款由 GitHub 處理。",
-    supportButton: "在 GitHub Sponsors 上支持",
-    setupGuideLink: "接收方設定指南（維護者）",
-    setupGuideBody: "完成 GitHub Sponsors 接收方設定後，將啟用同一個連結。",
+    pendingTitle: "Stripe 支持方案準備中",
+    pendingBody: "預計每月500日圓。權益和付款設定準備完成後開放訂閱。本應用程式不會收集或儲存信用卡資訊。",
+    availableTitle: "Stripe 每月支持方案",
+    availableBody: "登入帳戶後透過 Stripe 訂閱。付款前可查看價格與帳單條款，並透過 Stripe 管理取消訂閱和付款方式。",
+    supportButton: "透過 Stripe 訂閱支持方案",
+    monthlyPrice: "每月 {amount}（預計）",
     afterStoppingBody: "停止支持後，安全功能、備份與還原以及伺服器資料存取都不會受到限制。",
   },
 };
 
 export function supporterText(locale: AppLocale) {
-  return copies[locale];
+  return { ...copies[locale], ...planCopies[locale] };
 }

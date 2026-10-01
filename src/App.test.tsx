@@ -1,16 +1,19 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { createRefreshGuard } from "./App";
 import { backend } from "./lib/backend";
 import { brand } from "./lib/brand";
-import { GITHUB_SPONSORS_SETUP_URL } from "./lib/supporterConfig";
 import { getRebrandCopy } from "./lib/rebrandLocale";
 import { translate, type AppLocale } from "./lib/i18n";
 
 const rebrandLocales: readonly AppLocale[] = ["ja", "en", "de", "es", "fr", "ko", "pt-BR", "zh-CN", "zh-TW"];
 
 describe(brand.productName, () => {
+  afterEach(() => vi.restoreAllMocks());
   beforeEach(async () => {
+    // These existing wizard tests exercise the below-limit path. Boundary
+    // scenarios use an explicit authoritative count in membership.test.tsx.
+    vi.spyOn(backend, "membershipStatus").mockResolvedValue({ plan:"free", state:"free", registeredCount:2, serverLimit:3, expiresAt:null, paidUntil:null, cancelAtPeriodEnd:false, theme:null, previewOptIn:false, billingEnabled:false });
     localStorage.clear();
     localStorage.setItem("server-hub:language:v1", "ja");
     await backend.start("demo-paper");
@@ -321,15 +324,13 @@ describe(brand.productName, () => {
     fireEvent.click(await screen.findByRole("button", { name: "TomoNodeを応援" }, { timeout: 5_000 }));
     expect(await screen.findByRole("heading", { name: "TomoNodeを応援" })).toBeInTheDocument();
     expect(screen.getByText("支援は任意です。安定して提供している機能と安全機能は、これからも全員が無料で利用できます。")).toBeInTheDocument();
-    expect(screen.getByText("バックアップ・復元と変更前の安全バックアップ")).toBeInTheDocument();
-    expect(screen.getByText("将来追加する新機能の先行体験")).toBeInTheDocument();
-    expect(screen.getByText("開発中の機能へのフィードバック参加")).toBeInTheDocument();
-    expect(screen.getByText("限定デザインやアイコンなどの外観")).toBeInTheDocument();
-    expect(screen.getByText(/GitHub Sponsorsの受取設定完了後に利用可能/)).toBeInTheDocument();
-    const setupGuide = screen.getByRole("link", { name: "受取設定の手順（開発者向け）" });
-    expect(setupGuide).toHaveAttribute("href", GITHUB_SPONSORS_SETUP_URL);
-    expect(setupGuide).toHaveAttribute("target", "_blank");
-    expect(setupGuide).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByText("一括操作・保存・安全停止・既存バックアップ／復元")).toBeInTheDocument();
+    expect(screen.getByText("提供中の先行体験を任意で利用（現在は対象なし）")).toBeInTheDocument();
+    expect(screen.getByText("標準＋新しい限定テーマ3種類")).toBeInTheDocument();
+    expect(screen.getByText("Discord運営通知（起動完了・停止・異常終了）")).toBeInTheDocument();
+    expect(screen.getByText("￥500 / 月")).toBeInTheDocument();
+    expect(screen.getByText("Stripeの応援プランは準備中")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "本番受付は準備中" })).toBeDisabled();
     expect(screen.getByText("支援を停止した後も、安全機能、バックアップと復元、サーバーデータへのアクセスを制限しません。")).toBeInTheDocument();
     expect(screen.queryByText("無料版とPro／サポーター版")).not.toBeInTheDocument();
     expect(screen.queryByText("価格未定")).not.toBeInTheDocument();

@@ -1,18 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { GITHUB_SPONSORS_SETUP_URL, GITHUB_SPONSORS_URL, isSupportExternalUrl, supportConfig, supportExternalUrls } from "./supporterConfig";
+import { formatSupportMonthlyAmount, supportConfig } from "./supporterConfig";
 
-describe("GitHub Sponsors support configuration", () => {
-  it("starts disabled until recipient setup is complete", () => {
+describe("Stripe support configuration", () => {
+  it("keeps enrollment disabled while preparing the JPY 500 monthly plan", () => {
     expect(supportConfig.enabled).toBe(false);
-    expect(supportConfig.sponsorUrl).toBe(GITHUB_SPONSORS_URL);
-    expect(supportConfig.setupUrl).toBe(GITHUB_SPONSORS_SETUP_URL);
+    expect(supportConfig.provider).toBe("stripe");
+    expect(supportConfig.monthlyAmount).toBe(500);
+    expect(supportConfig.currency).toBe("JPY");
   });
 
-  it("keeps support destinations on the fixed HTTPS allowlist", () => {
-    expect(supportExternalUrls).toEqual([GITHUB_SPONSORS_URL, GITHUB_SPONSORS_SETUP_URL]);
-    expect(isSupportExternalUrl(GITHUB_SPONSORS_URL)).toBe(true);
-    expect(isSupportExternalUrl(GITHUB_SPONSORS_SETUP_URL)).toBe(true);
-    expect(isSupportExternalUrl("https://example.com/")).toBe(false);
-    expect(isSupportExternalUrl("javascript:alert(1)")).toBe(false);
+  it("formats the same planned amount for different locales", () => {
+    expect(formatSupportMonthlyAmount("ja")).toBe("￥500");
+    expect(formatSupportMonthlyAmount("en")).toBe("¥500");
   });
 });

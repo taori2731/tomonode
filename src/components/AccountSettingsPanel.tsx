@@ -4,6 +4,7 @@ import { accountText } from "../lib/accountLocale";
 import { accountSettingsText } from "../lib/accountSettingsLocale";
 import type { AccountProfile } from "../lib/accountTypes";
 import { Icon } from "./Icon";
+import { SupporterBenefitsPanel } from "./SupporterBenefitsPanel";
 
 export type AccountSettingsView = "profile" | "security" | "plan";
 
@@ -158,27 +159,7 @@ export function AccountSettingsPanel({
         <div className="account-settings-security-row"><Icon name="trash" size={22} /><div><strong>{copy.deleteAccount}</strong><small>{copy.preparing}</small></div><button type="button" disabled>{copy.preparing}</button></div>
       </div> : null}
 
-      {!emailChangeOpen && view === "plan" ? <div className="account-settings-plan">
-        <h3><Icon name="check" size={21} />{ui.currentPlan}</h3>
-        <section className="account-settings-current-plan">
-          <span className="account-settings-plan-icon"><Icon name="user" size={36} /></span>
-          <div><strong>{copy.freePlan}</strong><b>{ui.freePrice}</b><small>{ui.freeSummary}</small></div>
-          <button type="button" onClick={() => document.getElementById("account-plan-comparison")?.scrollIntoView({ behavior: "smooth", block: "nearest" })}>{ui.comparePlans}<Icon name="chevron" size={16} /></button>
-        </section>
-        <h3 id="account-plan-comparison"><Icon name="lock" size={20} />{ui.comparePlans}</h3>
-        <div className="account-settings-plan-grid">
-          <section className="account-settings-plan-card is-current">
-            <h4>{copy.freePlan}</h4><strong>{ui.freePrice}</strong>
-            <ul>{ui.freeBenefits.map((benefit) => <li key={benefit}><Icon name="check" size={17} />{benefit}</li>)}</ul>
-            <button type="button" disabled>{ui.currentPlanButton}</button>
-          </section>
-          <section className="account-settings-plan-card is-supporter">
-            <h4>{ui.supporter}</h4><strong>{copy.preparing}</strong>
-            <p>{ui.supporterPending}</p>
-            <button type="button" disabled>{copy.seePlans} · {copy.preparing}</button>
-          </section>
-        </div>
-      </div> : null}
+      {!emailChangeOpen && view === "plan" ? <div className="account-settings-plan"><SupporterBenefitsPanel locale={locale} onAccount={() => onViewChange("profile")} /></div> : null}
 
       {notice ? <p className="compatibility good" role="status">{notice}</p> : null}
       {error ? <p className="error-banner" role="alert"><Icon name="info" size={17} />{error}</p> : null}

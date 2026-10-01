@@ -7,7 +7,7 @@ const { mkdirSync } = require("node:fs");
 
 const root = path.resolve(__dirname, "..");
 const baseUrl = process.env.TOMONODE_SMOKE_URL || "http://127.0.0.1:1420";
-const screenshotDir = process.env.TOMONODE_SMOKE_SCREENSHOTS || path.join(os.tmpdir(), "tomonode-account-0511-qa");
+const screenshotDir = process.env.TOMONODE_SMOKE_SCREENSHOTS || path.join(os.tmpdir(), "tomonode-account-0512-qa");
 const profile = {
   email: "player@example.com",
   displayName: "Player001",
@@ -79,9 +79,9 @@ async function main() {
     await page.screenshot({ path: path.join(screenshotDir, "tomonode-account-security-after.png") });
 
     await page.getByRole("tab", { name: "プラン" }).click();
-    await dialog.getByText("Supporter").waitFor();
-    assert.equal(await dialog.getByRole("button", { name: /プランを見る/ }).isDisabled(), true);
-    assert.equal(await dialog.getByText("¥500").count(), 0);
+    await dialog.getByRole("heading", { name: "Supporter", exact: true }).waitFor();
+    assert.equal(await dialog.getByRole("button", { name: "本番受付は準備中" }).isDisabled(), true);
+    assert.equal(await dialog.getByText("￥500 / 月", { exact: true }).count(), 1);
     await page.screenshot({ path: path.join(screenshotDir, "tomonode-account-plan-after.png") });
 
     await page.getByRole("tab", { name: "プロフィール" }).click();

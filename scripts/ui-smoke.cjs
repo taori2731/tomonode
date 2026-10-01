@@ -4,8 +4,7 @@ const path = require("node:path");
 const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "..");
-const url = "http://127.0.0.1:1420/";
-const githubSponsorsSetupUrl = "https://docs.github.com/ja/sponsors/receiving-sponsorships-through-github-sponsors/setting-up-github-sponsors-for-your-personal-account";
+const url = process.env.TOMONODE_SMOKE_URL || "http://127.0.0.1:1420/";
 const chromeCandidates = [
   process.env.PLAYWRIGHT_CHROME_PATH,
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -316,12 +315,23 @@ let browser;
   await page.getByText("203.0.***.***").waitFor();
   await page.screenshot({ path: path.join(root, "artifacts", "player-access-dark.png"), fullPage: true });
 
-  await page.locator(".top-button.import-button").click();
-  await page.getByRole("dialog").getByRole("heading", { name: "既存サーバーを取り込む" }).waitFor();
-  await page.getByRole("dialog").getByRole("button", { name: /選択/ }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "安全にスキャン" }).click();
-  await page.getByText("読み取り完了").waitFor();
-  await page.getByRole("dialog").getByRole("button", { name: "キャンセル" }).click();
+  // Import below the cap in a separate, disposable browser document; keep
+  // the three-server main fixture intact for later bulk-operation checks.
+  const importPage = await browser.newPage({ viewport: { width: 1580, height: 980 } });
+  await importPage.addInitScript(() => localStorage.setItem("server-hub:language:v1", "ja"));
+  await importPage.goto(url, { waitUntil: "networkidle" });
+  await importPage.getByRole("button", { name: "Creative Testを削除" }).click();
+  await importPage.getByRole("dialog").getByPlaceholder("Delete").fill("Delete");
+  importPage.once("dialog", (dialog) => dialog.accept());
+  await importPage.getByRole("dialog").getByRole("button", { name: "一覧から外す", exact: true }).click();
+  await importPage.getByRole("button", { name: "Creative Testを削除" }).waitFor({ state: "hidden" });
+  await importPage.locator(".top-button.import-button").click();
+  await importPage.getByRole("dialog").getByRole("heading", { name: "既存サーバーを取り込む" }).waitFor();
+  await importPage.getByRole("dialog").getByRole("button", { name: /選択/ }).click();
+  await importPage.getByRole("dialog").getByRole("button", { name: "安全にスキャン" }).click();
+  await importPage.getByText("読み取り完了").waitFor();
+  await importPage.getByRole("dialog").getByRole("button", { name: "キャンセル" }).click();
+  await importPage.close();
 
   await page.getByRole("button", { name: "友達を招待" }).click();
   await page.getByRole("dialog").getByRole("heading", { name: "友達を招待", exact: true }).waitFor();
@@ -453,7 +463,7 @@ let browser;
     let leftovers = await findJapaneseUiLeftovers();
     if (leftovers.length) throw new Error(`${locale}の言語設定画面に日本語の表示漏れがあります: ${leftovers.slice(0, 5).join(" / ")}`);
 
-    const privacyNavigation = page.locator(".settings-dialog-layout > nav > button").nth(4);
+    const privacyNavigation = page.locator(".settings-dialog-layout > nav > button").nth(5);
     await privacyNavigation.click();
     const privacyText = await page.locator(".privacy-list").textContent();
     for (const name of ["Minecraft", "Mojang", "Microsoft", "Palworld", "Pocketpair", "Valve"]) {
@@ -531,14 +541,40 @@ let browser;
   await page.getByRole("button", { name: "エメラルド" }).click();
   await page.locator(".settings-dialog-layout nav").getByRole("button", { name: "TomoNodeを応援" }).click();
   await page.getByRole("heading", { name: "TomoNodeを応援" }).waitFor();
-  await page.getByText("GitHub Sponsorsの受取設定完了後に利用可能").waitFor();
-  const supportSetupLink = page.getByRole("link", { name: "受取設定の手順（開発者向け）" });
-  if (await supportSetupLink.getAttribute("href") !== githubSponsorsSetupUrl) throw new Error("アプリのGitHub Sponsors受取設定手順URLが一致しません");
-  if (await supportSetupLink.getAttribute("target") !== "_blank") throw new Error("アプリのGitHub Sponsors受取設定手順が新しいタブ指定ではありません");
-  if (await supportSetupLink.getAttribute("rel") !== "noopener noreferrer") throw new Error("アプリのGitHub Sponsors受取設定手順にnoopener noreferrerがありません");
-  if (await page.getByRole("button", { name: "GitHub Sponsorsで支援" }).count()) throw new Error("GitHub Sponsors未設定なのにアプリの支援受付ボタンが表示されています");
+  await page.getByText("Stripeの応援プランは準備中", { exact: true }).waitFor();
+  await page.getByText("￥500 / 月", { exact: true }).waitFor();
+  if (await page.getByRole("button", { name: "本番受付は準備中" }).isEnabled()) throw new Error("準備中なのに申し込みが有効です");
   await page.locator(".app-settings-dialog").getByRole("button", { name: "閉じる" }).click();
 
+  await page.getByRole("button", { name: "Creative Testを削除" }).click();
+  await page.getByRole("dialog").getByRole("heading", { name: "サーバーを削除" }).waitFor();
+  await page.getByText("一覧から外す（おすすめ）").waitFor();
+  const removeServerButton = page.getByRole("dialog").getByRole("button", { name: "一覧から外す" });
+  const deleteConfirmation = page.getByRole("dialog").getByPlaceholder("Delete");
+  if (await removeServerButton.isEnabled()) throw new Error("削除確認前に削除ボタンが有効です");
+  await deleteConfirmation.fill("Creative Test");
+  if (await removeServerButton.isEnabled()) throw new Error("サーバー名で削除確認を通過しました");
+  await deleteConfirmation.fill("delete");
+  if (await removeServerButton.isEnabled()) throw new Error("小文字deleteで削除確認を通過しました");
+  await deleteConfirmation.fill("Delete");
+  if (!await removeServerButton.isEnabled()) throw new Error("全言語共通のDeleteで削除確認できませんでした");
+  await page.getByRole("dialog").getByText("バックアップせず今すぐ削除", { exact: true }).click();
+  await page.getByText("最終バックアップは作成されません。削除したワールド、設定、Mod／プラグインはこのアプリから復旧できません。").waitFor();
+  const immediateMinecraftDeleteButton = page.getByRole("dialog").getByRole("button", { name: "今すぐ削除" });
+  if (!await immediateMinecraftDeleteButton.isEnabled()) throw new Error("Minecraftのバックアップなし削除をDeleteで確認できませんでした");
+  await page.screenshot({ path: path.join(root, "artifacts", "minecraft-immediate-delete-confirmation.png"), fullPage: true });
+  await page.getByRole("button", { name: "削除画面を閉じる" }).click();
+
+  // The isolated browser demo starts with three registered servers. Verify
+  // the cap, then unregister only disposable demo data to exercise creation.
+  await page.locator(".top-button.create").click();
+  await page.getByRole("heading", { name: "Freeプランでは3個まで管理できます" }).waitFor();
+  await page.getByRole("dialog").getByRole("button", { name: "閉じる", exact: true }).click();
+  await page.getByRole("button", { name: "Creative Testを削除" }).click();
+  await page.getByRole("dialog").getByPlaceholder("Delete").fill("Delete");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("dialog").getByRole("button", { name: "一覧から外す", exact: true }).click();
+  await page.getByRole("button", { name: "Creative Testを削除" }).waitFor({ state: "hidden" });
   await page.locator(".top-button.create").click();
   await page.getByRole("dialog").getByRole("heading", { name: "PC診断" }).waitFor();
   await page.getByRole("dialog").getByRole("button", { name: "選択", exact: true }).click();
@@ -566,24 +602,7 @@ let browser;
   await page.screenshot({ path: path.join(root, "artifacts", "world-generation-light.png"), fullPage: true });
   await page.locator(".wizard-header").getByRole("button", { name: "作成画面を閉じる" }).click();
 
-  await page.getByRole("button", { name: "Creative Testを削除" }).click();
-  await page.getByRole("dialog").getByRole("heading", { name: "サーバーを削除" }).waitFor();
-  await page.getByText("一覧から外す（おすすめ）").waitFor();
-  const removeServerButton = page.getByRole("dialog").getByRole("button", { name: "一覧から外す" });
-  const deleteConfirmation = page.getByRole("dialog").getByPlaceholder("Delete");
-  if (await removeServerButton.isEnabled()) throw new Error("削除確認前に削除ボタンが有効です");
-  await deleteConfirmation.fill("Creative Test");
-  if (await removeServerButton.isEnabled()) throw new Error("サーバー名で削除確認を通過しました");
-  await deleteConfirmation.fill("delete");
-  if (await removeServerButton.isEnabled()) throw new Error("小文字deleteで削除確認を通過しました");
-  await deleteConfirmation.fill("Delete");
-  if (!await removeServerButton.isEnabled()) throw new Error("全言語共通のDeleteで削除確認できませんでした");
-  await page.getByRole("dialog").getByText("バックアップせず今すぐ削除", { exact: true }).click();
-  await page.getByText("最終バックアップは作成されません。削除したワールド、設定、Mod／プラグインはこのアプリから復旧できません。").waitFor();
-  const immediateMinecraftDeleteButton = page.getByRole("dialog").getByRole("button", { name: "今すぐ削除" });
-  if (!await immediateMinecraftDeleteButton.isEnabled()) throw new Error("Minecraftのバックアップなし削除をDeleteで確認できませんでした");
-  await page.screenshot({ path: path.join(root, "artifacts", "minecraft-immediate-delete-confirmation.png"), fullPage: true });
-  await page.getByRole("button", { name: "削除画面を閉じる" }).click();
+
 
   if (errors.length) throw new Error(`ブラウザエラー: ${errors.join(" | ")}`);
 

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import packageMetadata from "../../package.json";
 import { brand } from "./brand";
+import type { MembershipView, DiscordEvents, DiscordView } from "./membership";
 import type {
   CreateServerInput,
   CrossplayInstallInput,
@@ -302,6 +303,15 @@ async function desktopOr<T>(command: string, args: Record<string, unknown>, fall
 }
 
 export const backend = {
+  membershipStatus: (force = false) => desktopOr<MembershipView>("membership_status", { force }, () => ({ plan: "free", state: "browser_demo", registeredCount: demoServers.length, serverLimit: 3, expiresAt: null, paidUntil: null, cancelAtPeriodEnd: false, theme: null, previewOptIn: false, billingEnabled: false })),
+  membershipSetTheme: (theme: string | null) => desktopOr<MembershipView>("membership_set_theme", { theme }, () => Promise.reject(new Error("限定テーマの適用は会員資格を確認したWindows版で利用できます"))),
+  membershipSetPreview: (enabled: boolean) => desktopOr<MembershipView>("membership_set_preview", { enabled }, () => Promise.reject(new Error("先行体験にはSupporter資格が必要です"))),
+  membershipFeatureAvailable: (featureId: string) => desktopOr<boolean>("membership_feature_available", { featureId }, () => false),
+  discordStatus: (serverId: string) => desktopOr<DiscordView>("discord_notification_status", { serverId }, () => ({ registered: false, enabled: false, events: { started: true, stopped: true, crashed: true }, destinationId: null, lastResult: "not_sent" })),
+  discordSaveDestination: (serverId: string, webhookUrl: string) => desktopOr<DiscordView>("discord_save_destination", { serverId, webhookUrl }, () => Promise.reject(new Error("Webhookの保存は会員資格を確認したWindows版で利用できます"))),
+  discordSetNotifications: (serverId: string, enabled: boolean, events: DiscordEvents) => desktopOr<DiscordView>("discord_set_notifications", { serverId, enabled, events }, () => Promise.reject(new Error("Discord通知はWindows版で利用できます"))),
+  discordDeleteDestination: (serverId: string) => desktopOr<DiscordView>("discord_delete_destination", { serverId }, () => ({ registered: false, enabled: false, events: { started: false, stopped: false, crashed: false }, destinationId: null, lastResult: "not_sent" })),
+  discordTestNotification: (serverId: string, confirmed: boolean) => desktopOr<DiscordView>("discord_test_notification", { serverId, confirmed }, () => Promise.reject(new Error("ブラウザデモからDiscordへは送信しません"))),
   isDesktop: inDesktop,
   getAppVersion: () => inDesktop ? import("@tauri-apps/api/app").then(({ getVersion }) => getVersion()) : Promise.resolve(packageMetadata.version),
   accountLoadSession: () => desktopOr<AccountProfile | null>("account_load_session", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => null),
@@ -320,7 +330,7 @@ export const backend = {
   accountRequestEmailChange: (newEmail: string, currentPassword: string) => desktopOr<void>("account_request_email_change", { apiBaseUrl: ACCOUNT_API_BASE_URL, newEmail, currentPassword }, () => Promise.reject(new Error("メールアドレスの変更はインストール版Windowsアプリで利用できます"))),
   accountUploadAvatar: (mimeType: AccountAvatarMimeType, dataBase64: string) => desktopOr<void>("account_upload_avatar", { apiBaseUrl: ACCOUNT_API_BASE_URL, mimeType, dataBase64 }, () => Promise.reject(new Error("プロフィール画像の変更はインストール版Windowsアプリで利用できます"))),
   accountRemoveAvatar: () => desktopOr<void>("account_remove_avatar", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => Promise.reject(new Error("プロフィール画像の変更はインストール版Windowsアプリで利用できます"))),
-  accountLogout: () => desktopOr<void>("account_logout", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => undefined),
+  accountLogout: async () => { await desktopOr<void>("account_logout", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => undefined); window.dispatchEvent(new Event("tomonode:membership-changed")); },
   quitApp: () => desktopOr<void>("quit_app", {}, () => undefined),
   checkAppUpdate: (endpoint?: string) => desktopOr<AppUpdateInfo>("check_app_update", { endpoint: endpoint?.trim() || null }, () => ({ configured: true, currentVersion: packageMetadata.version, available: false })),
   installAppUpdate: (expectedVersion: string, endpoint?: string) => desktopOr<void>("install_app_update", { expectedVersion, endpoint: endpoint?.trim() || null }, () => Promise.reject(new Error("Update installation is only available in the installed Windows app."))),
@@ -330,7 +340,11 @@ export const backend = {
   checkExtensionConflicts: (serverId: string) => desktopOr<ExtensionCheckReport>("check_extension_conflicts", { serverId }, () => ({ checkedAt: new Date().toISOString(), blocking: false, scannedFiles: 0, managedFiles: 0, items: [], limitation: "ブラウザデモではJAR／ZIP内部を検査しません。" })),
   exportServerMigration: (serverId: string, destination: string) => desktopOr<MigrationExportResult>("export_server_migration", { serverId, destination }, () => ({ path: destination, manifest: { schemaVersion: 1, createdAt: new Date().toISOString(), sourceServerName: "Demo", serverType: "paper", minecraftVersion: "1.21.11", launchTarget: "server.jar", javaMajor: 21, minMemoryMib: 1024, maxMemoryMib: 4096, port: 25565, settings: demoServers[0].settings, fileCount: 42, sourceSizeBytes: 1024, archiveSha256: "browser-demo" } })),
   inspectServerMigration: (archivePath: string) => desktopOr<MigrationManifest>("inspect_server_migration", { archivePath }, () => ({ schemaVersion: 1, createdAt: new Date().toISOString(), sourceServerName: "Imported Server", serverType: "paper", minecraftVersion: "1.21.11", launchTarget: "server.jar", javaMajor: 21, minMemoryMib: 1024, maxMemoryMib: 4096, port: 25565, settings: demoServers[0].settings, fileCount: 42, sourceSizeBytes: 1024, archiveSha256: "browser-demo" })),
-  restoreServerMigration: (input: RestoreMigrationInput) => desktopOr<ServerProfile>("restore_server_migration", { input }, () => ({ ...demoServers[0], id: `restored-${Date.now()}`, name: input.serverName, rootPath: `${input.parentPath}\\${input.serverName}`, javaPath: input.javaPath, javaMajor: input.javaMajor })),
+  restoreServerMigration: (input: RestoreMigrationInput) => desktopOr<ServerProfile>("restore_server_migration", { input }, () => {
+    if (demoServers.length >= 3) throw new Error("FREE_SERVER_LIMIT: Freeプランでは3個まで管理できます");
+    const profile = { ...demoServers[0], id:`restored-${Date.now()}`, name:input.serverName, rootPath:`${input.parentPath}\\${input.serverName}`, javaPath:input.javaPath, javaMajor:input.javaMajor };
+    demoServers = [...demoServers,profile]; return profile;
+  }),
   suggestServerPort: (startingPort = 25565, transport: NetworkProtocol = "tcp", reserveAdjacent = transport === "udp") => desktopOr<number>("suggest_server_port", { startingPort, transport, reserveAdjacent }, () => {
     const used = new Set(demoServers.flatMap((server) => {
       const ports: number[] = [];
@@ -404,6 +418,7 @@ export const backend = {
   }),
   createServer: (input: CreateServerInput) =>
     desktopOr<ServerProfile>("create_server", { input }, () => {
+      if (demoServers.length >= 3) throw new Error("FREE_SERVER_LIMIT: Freeプランでは3個まで管理できます");
       const owner = demoServers.find((server) => server.port === input.port);
       if (owner) throw new Error(`ポート ${input.port} は「${owner.name}」と重複しています。空きポートへ変更してください`);
       const profile: ServerProfile = {
@@ -561,6 +576,7 @@ export const backend = {
     warnings: ["ブラウザデモでは実フォルダーを読み取りません。"], canImport: true, sourceFingerprint: "demo-fingerprint",
   })),
   importExistingServer: (input: ImportServerInput) => desktopOr<ServerProfile>("import_existing_server", { input }, () => {
+    if (demoServers.length >= 3) throw new Error("FREE_SERVER_LIMIT: Freeプランでは3個まで管理できます");
     const preview = { serverType: "paper" as const, minecraftVersion: "1.21.11", settings: { defaultGameMode: "survival" as const, difficulty: "normal" as const, maxPlayers: 20, pvp: true, whitelist: true, allowCommands: false, onlineMode: true, allowFlight: false, forceGameMode: false, spawnProtection: 16, requireResourcePack: false, resourcePackUrl: "", resourcePackPrompt: "", worldName: "world", daylightCycle: true, spawnMonsters: true, spawnAnimals: true, viewDistance: 10, simulationDistance: 8 } };
     const now = new Date().toISOString();
     const profile: ServerProfile = { id: `import-${Date.now()}`, name: input.name, rootPath: input.rootPath, gameKind: "minecraft", serverType: preview.serverType, minecraftVersion: preview.minecraftVersion, launchTarget: "paper.jar", javaPath: input.javaPath, javaMajor: input.javaMajor, minMemoryMib: 1024, maxMemoryMib: 4096, port: 25565, eulaAcceptedAt: now, pendingRestart: false, settings: preview.settings, createdAt: now, updatedAt: now };
