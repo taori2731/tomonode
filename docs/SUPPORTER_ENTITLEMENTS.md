@@ -1,6 +1,8 @@
 # Free / Supporter 実装・公開前受入ガイド
 
-更新日: 2026-09-30。これはローカル開発実装の仕様です。公開済みアプリ・Worker・サイトへの反映や、本番受付開始を示すものではありません。
+更新日: 2026-10-01。0.5.12アプリへ統合した準備実装と、未統合のサービス側計画を区別するガイドです。本番受付開始を示すものではありません。公開版の配信状態はGitHub Releaseで、実機更新の成功は別途確認してください。
+
+0.5.12に含むのはアプリ側の登録数制限・署名資格検証・限定テーマ・Discord通知の準備実装です。既存0.5.11のブラウザ認証、プロフィール、メール変更は維持します。公開鍵は空、本番受付は無効です。以下のWorker資格発行・0005移行・Stripe照合仕様は過去の開発実装に基づく導入計画であり、このブランチのWorkerへは統合していません。公開Worker/D1/サイト/秘密情報の変更や実送信は含みません。
 
 ## プランと登録数
 
@@ -24,7 +26,7 @@ Rustの追加3経路を共通ロックで直列化し、ファイル処理前に
 
 アプリ側の権限はRust `MembershipService` が判断します。UI、登録、限定テーマ、先行機能、Discord設定・送信は同じサービスを参照します。React/localStorageのプラン名ではネイティブ権限を得られません。
 
-Workerの `/v1/membership/lease` は既存認証セッションを検証し、署名検証済みWebhookに由来する、指定Price・指定Stripeモード・`active`・将来の支払い期間末を満たす契約だけにEd25519署名資格を発行します。資格はアプリ専用audience、アカウントID、現在のBearerセッションのSHA-256、モード、発行時刻、有効期限、支払済み期間末、解約予約を含みます。Bearerや署名用秘密鍵をReactへ返しません。
+今後統合するWorkerの `/v1/membership/lease` は既存認証セッションを検証し、署名検証済みWebhookに由来する、指定Price・指定Stripeモード・`active`・将来の支払い期間末を満たす契約だけにEd25519署名資格を発行する設計です。資格はアプリ専用audience、アカウントID、現在のBearerセッションのSHA-256、モード、発行時刻、有効期限、支払済み期間末、解約予約を含みます。Bearerや署名用秘密鍵をReactへ返しません。現行公開Workerではこの資格発行は未実装です。
 
 Rustはビルド時の公開鍵・keyIdで署名と全条件を検査します。鍵・セッション不一致、改ざん、不正な期間、未来の発行、失効資格を拒否します。テストモード資格はdebugビルドでのみ受け付け、releaseビルドでは拒否します。公開実行ファイルに有料モックのスイッチはありません。
 
@@ -40,7 +42,9 @@ Rustはビルド時の公開鍵・keyIdで署名と全条件を検査します�
 
 利用者管理のPCではバイナリ自体の変更やシステム権限による攻撃まで完全には防げません。完全な不正防止は主張しません。
 
-## Stripe Webhookと非破壊移行
+## Stripe Webhookと非破壊移行（今後の統合作業・0.5.12に含まない）
+
+この節は旧開発作業ツリーの仕様です。以下の0005移行ファイル・テストWorkerは本ブランチに存在しません。現行認証と組み合わせた移植・独立検証・明示承認が必要です。
 
 既存の署名・タイムスタンプ検証に加え、モード、対象Price、イベントID、イベント作成時刻を確認します。購読状態はStripeから取得した現在値を使い、遅れたinvoiceから独自に有効化しません。D1の照合トークン付き条件更新で同時取得の古い結果を破棄し、同じ秒のイベント競合も処理します。終了済み購読を古いイベントで再有効化しません。新しい購読IDは独立して扱います。
 
@@ -90,35 +94,30 @@ URLは `https://discord.com/api[/v10]/webhooks/{id}/{token}` のみ受け付け�
 
 ## 公開反映前の必須作業（未実施）
 
-1. このルートは0.5.2系ソースです。別の作業ツリーにある現行公開版のブラウザ認証・プロフィール変更と統合し、既存認証を壊さない差分をレビューします。今回の改修だけで現行インストール済みアプリが更新されるわけではありません。
+1. アプリ側は0.5.11の認証・プロフィールへ統合済みです。ローカルテストと署名済み配信の検証は、インストール済みアプリの更新・本人アカウントによる受入確認とは別です。
 2. 対象Worker/D1とバックアップ、非破壊0005移行、署名鍵追加、公開鍵固定を明示して承認を得ます。現在の設定は公開アカウントWorkerを指しており、独立ステージングではありません。
 3. 秘密のEd25519 JWKをWorker secret `MEMBERSHIP_SIGNING_JWK` にだけ保存します。対応する公開32バイト鍵をbase64url形式で `membership-public-key.json` に固定し、双方のkeyIdを合わせます。現状の公開鍵は空で、資格発行／受理は有効化していません。秘密鍵をソースやCLI引数へ書かないでください。
 4. 既存公開認証を維持する `stripe-test-worker.ts` のラッパーを使って承認済み検証環境へ反映します。通常の `wrangler.toml` の古いWorker単体を公開APIへデプロイしてはいけません。テストラッパーは本番キー・liveイベントを拒否し、秘密キー交換だけでは本番化できません。
 5. 明示指定のテストアカウントとStripeテスト購読でdebugアプリとの資格取得、期間末解約、通信断、再起動、時計、ログアウト、プロフィール、登録競合を実機確認します。実際の有料購入や公開受付はまだ行いません。
 6. 本人が指定・許可したDiscordテストチャンネルで各ゲームの実起動・正常停止・異常終了・429以外のエラーを受入確認します。今回のテストはモック送信のみです。
-7. 本番規約・返金／異議申し立て方針・税・問い合わせ・個人情報開示、live対応Worker、実際の署名済みリリース／アップデータを別途レビューします。承認前に `supportConfig.enabled` を有効にしたり、サイト／インストーラーを公開しません。
+7. 本番規約・返金／異議申し立て方針・税・問い合わせ・個人情報開示、live対応Workerを別途レビューします。承認前に `supportConfig.enabled` を有効にしたり、有料受付サイトを公開しません。0.5.12の準備版アプリ更新は承認済みですが、決済開始の承認とは別です。
 
 ## ローカル検証の再現
 
 ```powershell
-# workspace root: historical artifact copies are separate projects
+# 0.5.12 release worktree
 npm run check
-npm test -- --exclude 'website/**' --exclude 'cloudflare/**' --exclude 'artifacts/**' --maxWorkers=2
+npm test -- --maxWorkers=1 --reporter=dot --exclude website/src/App.test.tsx
 npm run build
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
-cargo build --locked --manifest-path src-tauri/Cargo.toml
-node scripts/supporter-ui-smoke.cjs
+npm run test:ui
+node scripts/account-settings-smoke.cjs
+npm run test:ui:performance
 
 # cloudflare/account-api
 npm run typecheck
 npm test
-npm audit --omit=dev
-npx wrangler deploy --dry-run --config wrangler.stripe-test.toml
-
-# website
-npm run build
-npm test
 ```
 
-`scripts/supporter-ui-smoke.cjs` はheadlessブラウザの応答差し替えだけで有料画面を検証し、製品コードへモックを組み込みません。終了時に自分が作ったブラウザとViteを終了します。実ネイティブ資格、Windows資格情報保存、実Stripe・Discord、インストーラー受入とは別の証拠です。検証結果は `artifacts/supporter-implementation-20260930/WORK_REPORT.md` を参照してください。
+画面スモークはブラウザデモとテスト応答を使い、製品に有料モックを組み込みません。終了時に自分が作ったブラウザとViteを終了します。実ネイティブ資格、Windows資格情報保存、実Stripe・Discord、インストーラー受入とは別の証拠です。実施範囲と未実施事項は `docs/releases/0.5.12.md` を参照してください。
