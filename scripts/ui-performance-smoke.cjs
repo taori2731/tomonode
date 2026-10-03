@@ -26,6 +26,19 @@ async function waitForServer() {
 
 let preview;
 let browser;
+let cdp;
+let traceStarted = false;
+const traceEvents = [];
+
+async function saveDiagnosticTrace() {
+  if (!traceStarted) return;
+  const complete = new Promise((resolve) => cdp.once("Tracing.tracingComplete", resolve));
+  await cdp.send("Tracing.end");
+  await complete;
+  traceStarted = false;
+  fs.mkdirSync(path.join(root, "artifacts"), { recursive: true });
+  fs.writeFileSync(path.join(root, "artifacts", "ui-performance-trace.json"), JSON.stringify({ traceEvents }));
+}
 
 (async () => {
   if (!fs.existsSync(path.join(root, "dist", "index.html"))) throw new Error("Run npm run build before the performance smoke test.");
@@ -38,8 +51,13 @@ let browser;
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
   await page.addInitScript(() => localStorage.setItem("server-hub:language:v1", "ja"));
-  const cdp = await context.newCDPSession(page);
+  cdp = await context.newCDPSession(page);
   await cdp.send("Emulation.setCPUThrottlingRate", { rate: 6 });
+  if (process.env.UI_PERFORMANCE_TRACE === "1") {
+    cdp.on("Tracing.dataCollected", ({ value }) => traceEvents.push(...value));
+    await cdp.send("Tracing.start", { categories: "devtools.timeline,v8,disabled-by-default-devtools.timeline" });
+    traceStarted = true;
+  }
   await page.goto(url, { waitUntil: "networkidle" });
   await page.getByRole("heading", { name: "Survival World" }).waitFor();
 
@@ -107,6 +125,7 @@ let browser;
   console.error(error);
   process.exitCode = 1;
 }).finally(async () => {
+  try { await saveDiagnosticTrace(); } catch (error) { console.error("Performance trace capture failed:", error); process.exitCode = 1; }
   if (browser) await browser.close();
   if (preview && !preview.killed) preview.kill();
 });
