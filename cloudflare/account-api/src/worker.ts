@@ -1,4 +1,5 @@
 import { handleBilling, type BillingEnv } from "./billing.ts";
+import { WEB_SESSION_PATH, WEB_CLIENT_HEADER, trustedWebClient, webSessionToken, sessionCookie, withSessionCookie } from "./web-session.ts";
 
 export interface Env extends BillingEnv {
   DB: D1Database;
@@ -1209,6 +1210,7 @@ function accountPageCorsMethods(pathname: string): string | null {
     "/v1/me/password-reset",
     "/v1/account/email-change/request",
     "/v1/auth/logout",
+    WEB_SESSION_PATH,
     "/v1/auth/browser/approve",
     "/v1/billing/checkout",
     "/v1/billing/portal",
@@ -1232,10 +1234,12 @@ function withAccountPageCors(request: Request, env: Env, response: Response): Re
   if (origin !== allowedOrigin) return response;
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", origin);
+  // Only the exact configured origin can receive credentialed browser replies.
+  headers.set("access-control-allow-credentials", "true");
   headers.set("vary", "Origin");
   if (request.method === "OPTIONS") {
     headers.set("access-control-allow-methods", allowedMethods);
-    headers.set("access-control-allow-headers", "authorization, content-type");
+    headers.set("access-control-allow-headers", `authorization, content-type, ${WEB_CLIENT_HEADER}`);
     headers.set("access-control-max-age", "600");
   }
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
@@ -1623,6 +1627,49 @@ async function signout(request: Request, env: Env): Promise<Response> {
   return json({ signedOut: true });
 }
 
+async function restoreWebSession(request: Request, env: Env): Promise<Response> {
+  if (!trustedWebClient(request, env.APP_BASE_URL)) return fail(403, "WEB_ORIGIN_REQUIRED");
+  const token = webSessionToken(request);
+  const body = await requestJson(request);
+  if (!body || Object.keys(body).some(key => key !== "statusOnly")
+    || (body.statusOnly !== undefined && typeof body.statusOnly !== "boolean")) return fail(400, "INVALID_REQUEST");
+  if (request.headers.has("authorization")) return withSessionCookie(fail(401, "SESSION_EXPIRED"), sessionCookie(null));
+  if (!request.headers.has("cookie")) return json({ account: null });
+  if (!token) return withSessionCookie(body.statusOnly ? json({ account: null }) : fail(401, "SESSION_EXPIRED"), sessionCookie(null));
+  const headers = new Headers(request.headers);
+  headers.set("authorization", `Bearer ${token}`);
+  const account = await authenticate(new Request(request.url, { headers }), env);
+  if (!account) return withSessionCookie(body.statusOnly ? json({ account: null }) : fail(401, "SESSION_EXPIRED"), sessionCookie(null));
+  // The homepage needs only identity, never a token. The account page keeps a
+  // restored Bearer in RAM to verify the existing session-bound signed lease.
+  return json({ ...(body.statusOnly ? {} : { accessToken: token }), account: publicAccount(account) });
+}
+
+async function rememberWebSession(request: Request, env: Env, response: Response): Promise<Response> {
+  if (!trustedWebClient(request, env.APP_BASE_URL)) return response;
+  const pathname = new URL(request.url).pathname;
+  if (["/v1/auth/password/verify-login-code", "/v1/auth/password/enroll"].includes(pathname) && response.ok) {
+    const data = await response.clone().json() as { accessToken?: string; expiresAt?: number };
+    if (/^[a-f0-9]{64}$/.test(data.accessToken ?? "") && Number.isSafeInteger(data.expiresAt)) {
+      return withSessionCookie(response, sessionCookie(data.accessToken!, data.expiresAt));
+    }
+  }
+  if (pathname === "/v1/auth/logout") {
+    // Explicit logout also revokes the remembered browser session when the
+    // supplied in-memory Bearer and cookie differ. Never revoke other devices.
+    const token = webSessionToken(request);
+    if (token) await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?")
+      .bind(await hmacHex(env.SESSION_PEPPER, token)).run();
+    return withSessionCookie(response, sessionCookie(null));
+  }
+  if (pathname === "/v1/auth/browser/approve" && response.ok) {
+    // Desktop approval intentionally consumes its web Bearer. Do not leave a
+    // misleading cookie that silently reuses a revoked credential.
+    return withSessionCookie(response, sessionCookie(null));
+  }
+  return response;
+}
+
 export async function fetchHandler(request: Request, env: Env): Promise<Response> {
   let response: Response;
   try {
@@ -1667,6 +1714,8 @@ export async function fetchHandler(request: Request, env: Env): Promise<Response
       response = await requestPasswordChange(request, env);
     } else if (request.method === "POST" && url.pathname === "/v1/auth/logout") {
       response = await signout(request, env);
+    } else if (request.method === "POST" && url.pathname === WEB_SESSION_PATH) {
+      response = await restoreWebSession(request, env);
     } else if (request.method === "GET" && url.pathname === "/v1/me") {
       response = await currentAccount(request, env);
     } else if (request.method === "PATCH" && url.pathname === "/v1/me/display-name") {
@@ -1685,6 +1734,8 @@ export async function fetchHandler(request: Request, env: Env): Promise<Response
   } catch {
     response = fail(500, "SERVICE_UNAVAILABLE");
   }
+  try { response = await rememberWebSession(request, env, response); }
+  catch { response = fail(500, "SERVICE_UNAVAILABLE"); }
   return withAccountPageCors(request, env, response);
 }
 
