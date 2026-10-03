@@ -12,3 +12,6 @@ migrations_dir = "migrations"
 
 [vars]
 APP_BASE_URL = "https://tomonode.site"
+# Production rollout installs routes and schema without accepting payments.
+BILLING_ENABLED = "false"
+BILLING_MODE = "live"

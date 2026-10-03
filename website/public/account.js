@@ -84,6 +84,18 @@ const translations = {
     logoutDone: "ログアウトしました。",
     logoutLocalDone: "このページのログイン状態を終了しました。",
     forgotLinkTitle: "パスワードを再設定",
+    billingReturnTitle: "アプリで購入状況を確認",
+    billingReturnIntro: "Stripeの購入画面から戻りました。このタブを閉じて、アプリで特典の反映を確認できます。",
+    billingReturnNote: "支払いの確認と特典の反映に時間がかかる場合があります。反映されるまで再購入しないでください。",
+    billingCancelTitle: "購入画面から戻りました",
+    billingCancelIntro: "購入を続ける場合は、TomoNodeアプリの購入ボタンから再度開いてください。",
+    billingCancelNote: "このページを開いても、既存の契約は解約されません。解約はアプリの契約管理から行ってください。",
+    billingReturnApp: "TomoNodeアプリに戻り、購入を開始したアカウントを確認してください。",
+    billingReturnRefresh: "「TomoNodeを応援」の「会員状態を再確認」を押してください。",
+    billingReturnNext: "Supporterになっていない場合は少し待って再確認してください。解決しない場合は問い合わせ窓口にご連絡ください。",
+    billingCancelNext: "すでに購入している場合は、新たに購入せず契約管理画面で契約の状態を確認してください。",
+    billingReturnSafety: "このページのURLは支払いや契約の証明にはなりません。特典は支払い情報の確認後に反映されます。",
+    billingReturnLogin: "Webのログイン画面を開く",
   },
   en: {
     languageLabel: "Language",
@@ -168,6 +180,18 @@ const translations = {
     logoutDone: "You are signed out.",
     logoutLocalDone: "The sign-in on this page has ended.",
     forgotLinkTitle: "Reset your password",
+    billingReturnTitle: "Check your purchase in the app",
+    billingReturnIntro: "You returned from Stripe Checkout. You can close this tab and check your benefits in the app.",
+    billingReturnNote: "Payment verification and benefit activation may take time. Do not purchase again while waiting.",
+    billingCancelTitle: "You returned from Checkout",
+    billingCancelIntro: "To continue your purchase, open Checkout again from the TomoNode app.",
+    billingCancelNote: "Opening this page does not cancel an existing subscription. Use subscription management in the app to cancel.",
+    billingReturnApp: "Return to the TomoNode app and check the account that started the purchase.",
+    billingReturnRefresh: "Under “Support TomoNode”, select “Refresh membership”.",
+    billingReturnNext: "If Supporter is not active, wait briefly and refresh again. Contact support if the issue persists.",
+    billingCancelNext: "If you already purchased, check your existing subscription in subscription management instead of purchasing again.",
+    billingReturnSafety: "This page URL is not proof of payment or a subscription. Benefits activate only after payment information is verified.",
+    billingReturnLogin: "Open web sign-in",
   },
 };
 
@@ -175,7 +199,11 @@ const query = new URLSearchParams(window.location.search);
 const rawRequestId = query.get("request") ?? "";
 const requestMode = query.get("mode") ?? "";
 const queryLocale = query.get("lang") ?? "";
-const browserRequestId = /^[a-f0-9]{32}$/i.test(rawRequestId) ? rawRequestId.toLowerCase() : "";
+// A redirect is only a navigation hint, never payment or entitlement evidence.
+const billingValues = query.getAll("billing");
+const billingReturn = billingValues.length === 1 && ["success", "cancel"].includes(billingValues[0])
+  ? billingValues[0] : "";
+const browserRequestId = !billingReturn && /^[a-f0-9]{32}$/i.test(rawRequestId) ? rawRequestId.toLowerCase() : "";
 let locale = queryLocale === "ja" || queryLocale === "en"
   ? queryLocale
   : (navigator.language?.toLowerCase().startsWith("ja") ? "ja" : "en");
@@ -196,6 +224,7 @@ const pairingExpiryElement = document.querySelector("#pairing-expiry");
 const completionCopy = document.querySelector("#completion-copy");
 const completionLoginButton = document.querySelector("#completion-login");
 const viewElements = {
+  billingReturn: document.querySelector("#billing-return-view"),
   login: document.querySelector("#login-view"),
   "login-code": document.querySelector("#login-code-view"),
   register: document.querySelector("#register-view"),
@@ -206,6 +235,8 @@ const viewElements = {
 };
 
 const viewCopy = {
+  billingReturn: billingReturn === "cancel"
+    ? ["billingCancelTitle", "billingCancelIntro"] : ["billingReturnTitle", "billingReturnIntro"],
   login: ["loginTitle", "loginIntro"],
   "login-code": ["verifyTitle", "verifyIntro"],
   register: ["registerTitle", "registerIntro"],
@@ -267,6 +298,10 @@ function renderLanguage() {
   if (currentView === "complete") {
     completionCopy.textContent = t(completionKey);
     completionLoginButton.hidden = completionKey === "desktopSuccess";
+  }
+  if (currentView === "billingReturn") {
+    document.querySelector("#billing-return-note").textContent = t(billingReturn === "cancel" ? "billingCancelNote" : "billingReturnNote");
+    document.querySelector("#billing-return-next").textContent = t(billingReturn === "cancel" ? "billingCancelNext" : "billingReturnNext");
   }
   for (const button of document.querySelectorAll("[data-toggle-password]")) {
     const input = document.getElementById(button.dataset.togglePassword);
@@ -674,6 +709,10 @@ languageSelect.addEventListener("change", () => {
   renderLanguage();
 });
 
+document.querySelector("#billing-return-login").addEventListener("click", () => {
+  setView("login", "#login-email");
+});
+
 for (const button of document.querySelectorAll("[data-toggle-password]")) {
   button.addEventListener("click", () => {
     const input = document.getElementById(button.dataset.togglePassword);
@@ -685,5 +724,6 @@ for (const button of document.querySelectorAll("[data-toggle-password]")) {
   });
 }
 
-setView(requestMode === "register" ? "register" : "login");
-if (rawRequestId) pairingInitialization = initializePairing();
+setView(billingReturn ? "billingReturn" : requestMode === "register" ? "register" : "login");
+// Do not mix a payment redirect with account pairing or trigger authentication.
+if (rawRequestId && !billingReturn) pairingInitialization = initializePairing();

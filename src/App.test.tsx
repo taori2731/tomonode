@@ -328,7 +328,7 @@ describe(brand.productName, () => {
     expect(screen.getByText("提供中の先行体験を任意で利用（現在は対象なし）")).toBeInTheDocument();
     expect(screen.getByText("標準＋新しい限定テーマ3種類")).toBeInTheDocument();
     expect(screen.getByText("Discord運営通知（起動完了・停止・異常終了）")).toBeInTheDocument();
-    expect(screen.getByText("￥500 / 月")).toBeInTheDocument();
+    expect(screen.getByText("$3 / 月＋適用税")).toBeInTheDocument();
     expect(screen.getByText("Stripeの応援プランは準備中")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "本番受付は準備中" })).toBeDisabled();
     expect(screen.getByText("支援を停止した後も、安全機能、バックアップと復元、サーバーデータへのアクセスを制限しません。")).toBeInTheDocument();

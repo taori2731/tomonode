@@ -25,6 +25,7 @@ interface Props {
   onRemoveAvatar: () => void;
   onPasswordChange: () => void;
   onRequestEmailChange: (newEmail: string, currentPassword: string) => Promise<void>;
+  onRequireLogin: () => void;
   onClearFeedback: () => void;
   onSignOut: () => void;
   onClose: () => void;
@@ -34,6 +35,7 @@ export function AccountSettingsPanel({
   locale, profile, view, displayName, busy, isDesktop, notice, error, avatarInput,
   onViewChange, onDisplayNameChange, onSaveDisplayName, onUploadAvatar, onRemoveAvatar,
   onPasswordChange, onRequestEmailChange, onClearFeedback, onSignOut, onClose,
+  onRequireLogin,
 }: Props) {
   const copy = accountText(locale);
   const ui = accountSettingsText(locale);
@@ -159,7 +161,7 @@ export function AccountSettingsPanel({
         <div className="account-settings-security-row"><Icon name="trash" size={22} /><div><strong>{copy.deleteAccount}</strong><small>{copy.preparing}</small></div><button type="button" disabled>{copy.preparing}</button></div>
       </div> : null}
 
-      {!emailChangeOpen && view === "plan" ? <div className="account-settings-plan"><SupporterBenefitsPanel locale={locale} onAccount={() => onViewChange("profile")} /></div> : null}
+      {!emailChangeOpen && view === "plan" ? <div className="account-settings-plan"><SupporterBenefitsPanel locale={locale} onAccount={onRequireLogin} /></div> : null}
 
       {notice ? <p className="compatibility good" role="status">{notice}</p> : null}
       {error ? <p className="error-banner" role="alert"><Icon name="info" size={17} />{error}</p> : null}

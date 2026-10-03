@@ -536,12 +536,13 @@ describe("TomoNode account API routes", () => {
     await expect(response.json()).resolves.toEqual({ ok: true });
   });
 
-  it("rejects unsupported routes, methods, and payment endpoints", async () => {
+  it("rejects unsupported routes and protects new billing endpoints", async () => {
     expect((await fetchHandler(new Request("https://account-api.tomonode.site/v1/nope"), unusedEnv)).status).toBe(404);
     expect((await fetchHandler(new Request("https://account-api.tomonode.site/v1/auth/request-code"), unusedEnv)).status).toBe(404);
-    for (const path of ["/v1/billing/checkout", "/v1/billing/portal", "/v1/webhooks/stripe"]) {
-      expect((await fetchHandler(new Request(`https://account-api.tomonode.site${path}`, { method: "POST" }), unusedEnv)).status).toBe(404);
+    for (const path of ["/v1/billing/checkout", "/v1/billing/portal"]) {
+      expect((await fetchHandler(new Request(`https://account-api.tomonode.site${path}`, { method: "POST" }), unusedEnv)).status).toBe(401);
     }
+    expect((await fetchHandler(new Request("https://account-api.tomonode.site/v1/webhooks/stripe", {method: "POST"}), unusedEnv)).status).toBe(503);
   });
 
   it("keeps the 0.5.7 email-code route working during staged migration", async () => {

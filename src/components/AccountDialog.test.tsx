@@ -4,6 +4,8 @@ import { backend } from "../lib/backend";
 import { accountText } from "../lib/accountLocale";
 import { accountSettingsText } from "../lib/accountSettingsLocale";
 import type { AccountBrowserAuthStart, AccountProfile } from "../lib/accountTypes";
+import type { MembershipView } from "../lib/membership";
+import { supportConfig } from "../lib/supporterConfig";
 import { openExternalUrl } from "./ExternalLinkHandler";
 import { AccountDialog } from "./AccountDialog";
 
@@ -32,6 +34,7 @@ let originalDesktop = false;
 beforeEach(() => { originalDesktop = backend.isDesktop; });
 afterEach(() => {
   backend.isDesktop = originalDesktop;
+  supportConfig.enabled = false;
   vi.restoreAllMocks();
   vi.mocked(openExternalUrl).mockReset();
 });
@@ -209,8 +212,43 @@ describe("AccountDialog", () => {
     fireEvent.click(within(menu).getByRole("tab", { name: copy.plan }));
     expect(within(menu).getByRole("tab", { name: copy.plan })).toHaveAttribute("aria-selected", "true");
     expect(within(menu).getByText("Stripeの応援プランは準備中")).toBeInTheDocument();
-    expect(within(menu).getByText("￥500 / 月")).toBeInTheDocument();
+    expect(within(menu).getByText("$3 / 月＋適用税")).toBeInTheDocument();
     expect(within(menu).getByRole("button", { name: "本番受付は準備中" })).toBeDisabled();
+  });
+
+  it("returns to the plan tab after browser login requested by an expired billing session", async () => {
+    backend.isDesktop = true;
+    supportConfig.enabled = true;
+    const membership: MembershipView = {
+      plan: "free", state: "session_expired", registeredCount: 0, serverLimit: 3,
+      expiresAt: null, paidUntil: null, cancelAtPeriodEnd: false, theme: null,
+      previewOptIn: false, billingEnabled: true,
+    };
+    vi.spyOn(backend, "membershipStatus").mockResolvedValue(membership);
+    vi.spyOn(backend, "accountBillingStatus").mockResolvedValue({signedIn:false,enabled:false});
+    vi.spyOn(backend, "accountBrowserAuthStart").mockResolvedValue(browserAuthStart);
+    vi.spyOn(backend, "accountBrowserAuthPoll").mockImplementation(async () => {
+      vi.mocked(backend.membershipStatus).mockResolvedValue({...membership,state:"free"});
+      vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:true});
+      return {status:"complete",account:profile};
+    });
+    vi.spyOn(backend, "accountBrowserAuthCancel").mockResolvedValue(undefined);
+    vi.mocked(openExternalUrl).mockResolvedValue(undefined);
+    renderAccount();
+    const settings = screen.getByRole("dialog", { name: copy.accountSettings });
+
+    fireEvent.click(within(settings).getByRole("tab", { name: copy.plan }));
+    expect(await within(settings).findByText("ログインの有効期限が切れています")).toBeInTheDocument();
+    fireEvent.click(within(settings).getByRole("button", { name: "ログインしてプランを確認" }));
+
+    const login = await screen.findByRole("dialog", { name: copy.title });
+    fireEvent.click(within(login).getByRole("button", { name: copy.browserAuthLogin }));
+
+    const returned = await screen.findByRole("dialog", { name: copy.accountSettings });
+    expect(within(returned).getByRole("tab", { name: copy.plan })).toHaveAttribute("aria-selected", "true");
+    expect(within(returned).getByText(copy.browserAuthSignedIn)).toBeInTheDocument();
+    await waitFor(()=>expect(within(returned).getByRole("button",{name:"Stripeで応援プランに申し込む"})).toBeEnabled());
+    expect(backend.accountBrowserAuthPoll).toHaveBeenCalledWith(browserAuthStart.requestId);
   });
 
   it("requests email change from Profile and Security without changing the active profile email", async () => {

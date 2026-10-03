@@ -1513,6 +1513,186 @@ pub(crate) fn membership_api_endpoint(base: &str) -> AppResult<Url> {
     api_endpoint(base, "v1/membership/lease")
 }
 
+fn validate_billing_destination(value: &str, portal: bool) -> AppResult<String> {
+    let url =
+        Url::parse(value).map_err(|_| AppError::Validation("決済URLが正しくありません".into()))?;
+    let host = if portal {
+        "billing.stripe.com"
+    } else {
+        "checkout.stripe.com"
+    };
+    if url.scheme() != "https"
+        || url.host_str() != Some(host)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some_and(|port| port != 443)
+    {
+        return Err(AppError::Validation("許可されていない決済URLです".into()));
+    }
+    Ok(url.to_string())
+}
+
+fn valid_billing_pin(pin: &serde_json::Value) -> bool {
+    if pin["keyId"].as_str() != Some("supporter-v1") {
+        return false;
+    }
+    let Some(encoded) = pin["publicKey"].as_str() else {
+        return false;
+    };
+    let Ok(bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded) else {
+        return false;
+    };
+    let Ok(key) = <[u8; 32]>::try_from(bytes) else {
+        return false;
+    };
+    ed25519_dalek::VerifyingKey::from_bytes(&key).is_ok_and(|key| !key.is_weak())
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountBillingStatus {
+    pub signed_in: bool,
+    pub enabled: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BillingStatusResponse {
+    enabled: bool,
+    mode: Option<String>,
+    currency: String,
+    monthly_amount: u32,
+}
+
+fn billing_status_view(
+    response: BillingStatusResponse,
+    pin_valid: bool,
+    allow_test: bool,
+) -> AppResult<AccountBillingStatus> {
+    if response.currency != "USD" || response.monthly_amount != 3 {
+        return Err(AppError::Validation("決済設定の確認に失敗しました".into()));
+    }
+    let mode_valid = response.mode.as_deref() == Some("live")
+        || (allow_test && response.mode.as_deref() == Some("test"));
+    Ok(AccountBillingStatus {
+        signed_in: true,
+        enabled: response.enabled && pin_valid && mode_valid,
+    })
+}
+
+// Credentials never cross the Tauri boundary; readiness is not a paid entitlement.
+async fn fetch_billing_status(
+    client: &reqwest::Client,
+    api_base_url: &str,
+    token: Option<&str>,
+    pin_valid: bool,
+    allow_test: bool,
+) -> AppResult<AccountBillingStatus> {
+    let Some(token) = token else {
+        return Ok(AccountBillingStatus {
+            signed_in: false,
+            enabled: false,
+        });
+    };
+    let response = client
+        .get(api_endpoint(api_base_url, "v1/billing/status")?)
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|_| network_error())?;
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Ok(AccountBillingStatus {
+            signed_in: false,
+            enabled: false,
+        });
+    }
+    if !response.status().is_success() {
+        return Err(network_error());
+    }
+    billing_status_view(
+        crate::secure_secrets::bounded_json(response, 4096).await?,
+        pin_valid,
+        allow_test,
+    )
+}
+
+#[tauri::command]
+pub async fn account_billing_status(
+    api_base_url: String,
+    state: State<'_, AppState>,
+) -> AppResult<AccountBillingStatus> {
+    let session = load_session()?;
+    let token = session.as_ref().map(|value| value.access_token.as_str());
+    let pin = serde_json::from_str(include_str!("../../membership-public-key.json"))
+        .unwrap_or(serde_json::Value::Null);
+    let status = fetch_billing_status(
+        &state.client,
+        &api_base_url,
+        token,
+        valid_billing_pin(&pin),
+        cfg!(debug_assertions),
+    )
+    .await?;
+    // An in-flight result must not outlive logout or an account switch.
+    if load_session()?
+        .as_ref()
+        .map(|value| value.access_token.as_str())
+        != token
+    {
+        return Ok(AccountBillingStatus {
+            signed_in: false,
+            enabled: false,
+        });
+    }
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn account_billing_session(
+    api_base_url: String,
+    portal: bool,
+    state: State<'_, AppState>,
+) -> AppResult<String> {
+    // Do not sell benefits from a build that cannot verify the resulting qualification.
+    let pin: serde_json::Value =
+        serde_json::from_str(include_str!("../../membership-public-key.json"))
+            .map_err(|_| AppError::Validation("決済接続は準備中です".into()))?;
+    if !valid_billing_pin(&pin) {
+        return Err(AppError::Validation("決済接続は準備中です".into()));
+    }
+    let session =
+        load_session()?.ok_or_else(|| AppError::Validation("ログインしてください".into()))?;
+    let path = if portal {
+        "v1/billing/portal"
+    } else {
+        "v1/billing/checkout"
+    };
+    let result = state
+        .client
+        .post(api_endpoint(&api_base_url, path)?)
+        .bearer_auth(&session.access_token)
+        .timeout(Duration::from_secs(45))
+        .send()
+        .await
+        .map_err(|_| network_error())?;
+    #[derive(Deserialize)]
+    struct BillingResponse {
+        url: String,
+    }
+    let result: BillingResponse = decode_response(result).await?;
+    if load_session()?
+        .as_ref()
+        .map(|value| value.access_token.as_str())
+        != Some(session.access_token.as_str())
+    {
+        return Err(AppError::Validation(
+            "ログイン状態が変わりました。もう一度お試しください".into(),
+        ));
+    }
+    validate_billing_destination(&result.url, portal)
+}
+
 #[tauri::command]
 pub async fn account_logout(api_base_url: String, state: State<'_, AppState>) -> AppResult<()> {
     let session = load_session()?;
@@ -1543,10 +1723,158 @@ pub async fn account_logout(api_base_url: String, state: State<'_, AppState>) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountProfile, BROWSER_LOGIN_URL, BrowserAuthPollRequest, BrowserAuthPollResponse,
-        EmailChangeRequest, api_endpoint, browser_code_challenge, random_browser_verifier,
-        valid_browser_request_id, valid_browser_user_code, validate_browser_auth_url,
+        AccountBillingStatus, AccountProfile, BROWSER_LOGIN_URL, BillingStatusResponse,
+        BrowserAuthPollRequest, BrowserAuthPollResponse, EmailChangeRequest, api_endpoint,
+        billing_status_view, browser_code_challenge, fetch_billing_status, random_browser_verifier,
+        valid_billing_pin, valid_browser_request_id, valid_browser_user_code,
+        validate_billing_destination, validate_browser_auth_url,
     };
+
+    #[test]
+    fn billing_status_requires_matching_price_mode_and_a_verification_pin() {
+        let response =
+            |enabled, mode: &str, currency: &str, monthly_amount| BillingStatusResponse {
+                enabled,
+                mode: Some(mode.into()),
+                currency: currency.into(),
+                monthly_amount,
+            };
+        assert!(
+            billing_status_view(response(true, "live", "USD", 3), true, false)
+                .unwrap()
+                .enabled
+        );
+        for (mode, pin, enabled) in [
+            ("test", true, true),
+            ("other", true, true),
+            ("live", false, true),
+            ("live", true, false),
+        ] {
+            assert!(
+                !billing_status_view(response(enabled, mode, "USD", 3), pin, false)
+                    .unwrap()
+                    .enabled
+            );
+        }
+        assert!(
+            billing_status_view(response(true, "test", "USD", 3), true, true)
+                .unwrap()
+                .enabled
+        );
+        assert!(billing_status_view(response(true, "live", "JPY", 3), true, false).is_err());
+        assert!(billing_status_view(response(true, "live", "USD", 500), true, false).is_err());
+        let view = serde_json::to_value(
+            billing_status_view(response(false, "live", "USD", 3), true, false).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(view, serde_json::json!({"signedIn":true,"enabled":false}));
+    }
+
+    #[tokio::test]
+    async fn billing_status_get_uses_native_bearer_and_bounded_safe_responses() {
+        use std::io::{Read, Write};
+        fn server(status: u16, body: String) -> (String, std::thread::JoinHandle<String>) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let handle = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0; 1024];
+                while !request.windows(4).any(|v| v == b"\r\n\r\n") {
+                    let length = stream.read(&mut chunk).unwrap();
+                    assert!(length > 0 && request.len() + length <= 8192);
+                    request.extend_from_slice(&chunk[..length]);
+                }
+                write!(stream, "HTTP/1.1 {status} fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                String::from_utf8(request).unwrap()
+            });
+            (base, handle)
+        }
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let token = "fixture-native-bearer";
+        assert_eq!(
+            fetch_billing_status(&client, "invalid", None, true, false)
+                .await
+                .unwrap(),
+            AccountBillingStatus {
+                signed_in: false,
+                enabled: false
+            }
+        );
+        for (http_status, body, expected) in [
+            (
+                200,
+                r#"{"enabled":false,"mode":"live","currency":"USD","monthlyAmount":3}"#.to_owned(),
+                Some((true, false)),
+            ),
+            (
+                200,
+                r#"{"enabled":true,"mode":"live","currency":"USD","monthlyAmount":3}"#.to_owned(),
+                Some((true, true)),
+            ),
+            (401, "private provider details".into(), Some((false, false))),
+            (503, "private provider details".into(), None),
+            (200, "x".repeat(4097), None),
+            (200, r#"{"enabled":true}"#.into(), None),
+        ] {
+            let (base, handle) = server(http_status, body);
+            let result = fetch_billing_status(&client, &base, Some(token), true, false).await;
+            match expected {
+                Some((signed_in, enabled)) => {
+                    assert_eq!(result.unwrap(), AccountBillingStatus { signed_in, enabled })
+                }
+                None => assert!(result.is_err()),
+            }
+            let request = handle.join().unwrap().to_ascii_lowercase();
+            assert!(request.starts_with("get /v1/billing/status "));
+            assert!(request.contains("authorization: bearer fixture-native-bearer"));
+        }
+    }
+
+    #[test]
+    fn billing_pin_requires_the_correct_id_and_a_valid_nonweak_public_key() {
+        use base64::Engine;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
+        let encoded =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes());
+        assert!(valid_billing_pin(
+            &serde_json::json!({"keyId":"supporter-v1","publicKey":encoded})
+        ));
+        for pin in [
+            serde_json::json!({"keyId":"supporter-v1","publicKey":""}),
+            serde_json::json!({"keyId":"other","publicKey":encoded}),
+            serde_json::json!({"keyId":"supporter-v1","publicKey":"not-a-key"}),
+            serde_json::json!({"keyId":"supporter-v1","publicKey":base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0;32])}),
+        ] {
+            assert!(!valid_billing_pin(&pin));
+        }
+    }
+
+    #[test]
+    fn billing_urls_are_strictly_stripe_and_action_specific() {
+        assert!(
+            validate_billing_destination("https://checkout.stripe.com/c/pay/test", false).is_ok()
+        );
+        assert!(
+            validate_billing_destination("https://billing.stripe.com/p/session/test", true).is_ok()
+        );
+        for bad in [
+            "https://checkout.stripe.com.evil.test/pay",
+            "https://evil.test/pay",
+            "http://checkout.stripe.com/pay",
+            "https://user:pass@checkout.stripe.com/pay",
+            "https://checkout.stripe.com:8443/pay",
+        ] {
+            assert!(validate_billing_destination(bad, false).is_err());
+        }
+        assert!(
+            validate_billing_destination("https://billing.stripe.com/p/session/test", false)
+                .is_err()
+        );
+    }
 
     #[test]
     fn browser_verifier_and_challenge_are_native_only_hex_values() {

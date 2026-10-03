@@ -57,6 +57,9 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
   const browserClientAttemptIdRef = useRef<string | null>(null);
   const browserPollInFlightRef = useRef<string | null>(null);
   const browserReturnViewRef = useRef<AccountView>("login");
+  // A billing action can require re-authentication. Keep its destination while
+  // the browser login is in progress so a successful login returns to Plan.
+  const loginReturnViewRef = useRef<"profile" | "plan">("profile");
 
   const publishProfile = useCallback((next: AccountProfile | null) => {
     setProfile(next);
@@ -133,7 +136,7 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
 
   useEffect(() => { dialogRef.current?.focus(); }, [view]);
 
-  const startBrowserAuth = async (mode: AccountBrowserAuthMode) => {
+  const startBrowserAuth = async (mode: AccountBrowserAuthMode, returnView?: "profile" | "plan") => {
     if (!backend.isDesktop || browserClientAttemptIdRef.current) return;
     let clientAttemptId: string;
     try {
@@ -142,6 +145,7 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
       setError(copy.browserAuthFailed);
       return;
     }
+    if (returnView) loginReturnViewRef.current = returnView;
     browserReturnViewRef.current = profile ? view === "security" ? "security" : "profile" : "login";
     browserClientAttemptIdRef.current = clientAttemptId;
     setBrowserAttempt({ clientAttemptId, start: null, expiresAt: null });
@@ -269,7 +273,7 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
           setError("");
           setNotice(copy.browserAuthSignedIn);
           publishProfile(result.account);
-          setView("profile");
+          setView(loginReturnViewRef.current);
         } else if (stopped || browserClientAttemptIdRef.current !== clientAttemptId) {
           return;
         } else if (result.status === "expired") {
@@ -412,7 +416,13 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
           onSaveDisplayName={(event) => void updateDisplayName(event)} onUploadAvatar={(event) => void uploadAvatar(event)}
           onRemoveAvatar={() => void removeAvatar()} onPasswordChange={() => void (profile.hasPassword ? requestCurrentPasswordReset() : startBrowserAuth("register"))}
           onRequestEmailChange={requestEmailChange} onClearFeedback={clearAccountFeedback}
-          onSignOut={() => void signOut()} onClose={onClose} />
+          onRequireLogin={() => {
+            loginReturnViewRef.current = "plan";
+            publishProfile(null);
+            setError("");
+            setNotice("");
+            setView("login");
+          }} onSignOut={() => void signOut()} onClose={onClose} />
           : view === "checking" ? <div className="account-profile-loading" role="status"><span className="spinner" /><strong>{copy.loading}</strong></div> : <>
           <header className="wizard-header account-dialog-header">
             <div><p className="wizard-kicker">TOMONODE</p><h2 id="account-dialog-title">{title}</h2></div>
@@ -437,7 +447,7 @@ export function AccountDialog({ locale, initialProfile, profileLoaded, onProfile
                 </> : <p role="status">{copy.browserAuthStarting}</p>}
                 <button className="secondary-button" type="button" onClick={() => void cancelBrowserAuth()}>{copy.browserAuthCancel}</button>
               </div> : <div className="form-stack account-form">
-                <button className="primary-button" type="button" disabled={busy || loading || !backend.isDesktop} onClick={() => void startBrowserAuth("login")}><Icon name="user" size={18} />{busy ? copy.loading : copy.browserAuthLogin}</button>
+                <button className="primary-button" type="button" disabled={busy || loading || !backend.isDesktop} onClick={() => void startBrowserAuth("login", loginReturnViewRef.current)}><Icon name="user" size={18} />{busy ? copy.loading : copy.browserAuthLogin}</button>
                 <button className="secondary-button" type="button" disabled={busy || loading || !backend.isDesktop} onClick={() => void startBrowserAuth("register")}>{copy.browserAuthRegister}</button>
               </div>}
               {notice ? <p className="compatibility good" role="status">{notice}</p> : null}

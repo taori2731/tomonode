@@ -81,7 +81,7 @@ async function main() {
     await page.getByRole("tab", { name: "プラン" }).click();
     await dialog.getByRole("heading", { name: "Supporter", exact: true }).waitFor();
     assert.equal(await dialog.getByRole("button", { name: "本番受付は準備中" }).isDisabled(), true);
-    assert.equal(await dialog.getByText("￥500 / 月", { exact: true }).count(), 1);
+    assert.equal(await dialog.getByText("$3 / 月＋適用税", { exact: true }).count(), 1);
     await page.screenshot({ path: path.join(screenshotDir, "tomonode-account-plan-after.png") });
 
     await page.getByRole("tab", { name: "プロフィール" }).click();

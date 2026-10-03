@@ -80,6 +80,7 @@ import { isValidDeleteConfirmation } from "./deleteConfirmation";
 import { getNetworkProtocolForServerType, getServerMaxPlayers, isPalworldServer } from "./gameAdapter";
 import { ACCOUNT_API_BASE_URL } from "./accountConfig";
 import type {
+  AccountBillingStatus,
   AccountAvatarMimeType,
   AccountBrowserAuthLocale,
   AccountBrowserAuthMode,
@@ -304,6 +305,8 @@ async function desktopOr<T>(command: string, args: Record<string, unknown>, fall
 }
 
 export const backend = {
+  accountBillingSession: (portal = false) => desktopOr<string>("account_billing_session", { apiBaseUrl: ACCOUNT_API_BASE_URL, portal }, () => Promise.reject(new Error("Billing is not available in the browser demo"))),
+  accountBillingStatus: () => desktopOr<AccountBillingStatus>("account_billing_status", { apiBaseUrl: ACCOUNT_API_BASE_URL }, () => ({ signedIn: false, enabled: false })),
   membershipStatus: (force = false) => desktopOr<MembershipView>("membership_status", { force }, () => ({ plan: "free", state: "browser_demo", registeredCount: demoServers.length, serverLimit: 3, expiresAt: null, paidUntil: null, cancelAtPeriodEnd: false, theme: null, previewOptIn: false, billingEnabled: false })),
   membershipSetTheme: (theme: string | null) => desktopOr<MembershipView>("membership_set_theme", { theme }, () => Promise.reject(new Error("限定テーマの適用は会員資格を確認したWindows版で利用できます"))),
   membershipSetPreview: (enabled: boolean) => desktopOr<MembershipView>("membership_set_preview", { enabled }, () => Promise.reject(new Error("先行体験にはSupporter資格が必要です"))),
