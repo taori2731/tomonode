@@ -163,7 +163,20 @@ jobs:
         run: npm run build
 
       - name: Run low-spec UI performance smoke test
+        env:
+          UI_PERFORMANCE_TRACE: "1"
         run: npm run test:ui:performance
+
+      - name: Preserve performance timing and browser trace
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1 (Node.js 24)
+        with:
+          name: ui-performance-diagnostics
+          path: |
+            artifacts/ui-performance-smoke.json
+            artifacts/ui-performance-trace.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   release:
     name: Build, sign, and verify Draft (optional publication)
