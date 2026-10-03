@@ -3,6 +3,132 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { fetchHandler } from "../src/worker.ts";
+import { WEB_SESSION_COOKIE, sessionCookie, webSessionToken } from "../src/web-session.ts";
+
+function webRequest(path, { cookie, origin = "https://tomonode.site", marker = "1", token, body = {}, method = "POST" } = {}) {
+  const headers = { origin, "content-type": "application/json" };
+  if (marker) headers["x-tomonode-web-client"] = marker;
+  if (cookie) headers.cookie = cookie;
+  if (token) headers.authorization = `Bearer ${token}`;
+  return new Request(`https://account-api.tomonode.site${path}`, { method, headers, ...(method === "POST" ? { body: JSON.stringify(body) } : {}) });
+}
+const cookieFor = token => `${WEB_SESSION_COOKIE}=${token}`;
+
+test("remembered browser sessions restore the real account, preserve expiration and leave native Bearer auth unchanged", async () => {
+  const { DB, env, token } = await emailFixture();
+  try {
+    const cookie = cookieFor(token);
+    const status = await fetchHandler(webRequest("/v1/auth/web-session", { cookie, body: { statusOnly: true } }), env);
+    assert.equal(status.status, 200);
+    const statusData = await status.json();
+    assert.equal(statusData.account.userId, "stable-id");
+    assert.equal(statusData.accessToken, undefined, "public header must never receive a Bearer");
+    assert.equal(status.headers.get("set-cookie"), null, "reading must not extend the session");
+    assert.equal(status.headers.get("access-control-allow-credentials"), "true");
+    assert.equal(status.headers.get("cache-control"), "no-store, max-age=0");
+    const resumed = await fetchHandler(webRequest("/v1/auth/web-session", { cookie }), env);
+    assert.deepEqual(await resumed.json(), { accessToken: token, account: statusData.account });
+    assert.equal(await sessionStatus(env, token), 200);
+    const cookieOnlyNative = await fetchHandler(new Request("https://account-api.tomonode.site/v1/me", { headers: { cookie } }), env);
+    assert.equal(cookieOnlyNative.status, 401, "cookie auth is confined to its dedicated endpoint");
+    assert.equal(DB.sqlite.prepare("SELECT count(*) AS n FROM sessions").get().n, 1);
+  } finally { DB.close(); }
+});
+
+for (const options of [{ origin: "https://evil.test" }, { origin: "null" }, { origin: "https://tomonode.site.evil.test" }, { origin: "http://tomonode.site" }, { marker: "" }, { marker: "2" }]) {
+  test(`remembered session rejects untrusted browser context ${JSON.stringify(options)}`, async () => {
+    const { DB, env, token } = await emailFixture();
+    try {
+      const result = await fetchHandler(webRequest("/v1/auth/web-session", { cookie: cookieFor(token), ...options }), env);
+      assert.equal(result.status, 403);
+      assert.deepEqual(await result.json(), { error: "WEB_ORIGIN_REQUIRED" });
+      assert.equal(result.headers.get("set-cookie"), null);
+      assert.equal(await sessionStatus(env, token), 200, "a hostile origin cannot erase another site's session");
+    } finally { DB.close(); }
+  });
+}
+
+for (const cause of ["expiry", "password-version", "removed", "duplicate", "malformed", "bearer-and-cookie"]) {
+  test(`remembered session fails closed and clears invalid cookie: ${cause}`, async () => {
+    const { DB, env, token } = await emailFixture();
+    try {
+      if (cause === "expiry") DB.sqlite.prepare("UPDATE sessions SET expires_at=0").run();
+      if (cause === "password-version") DB.sqlite.prepare("UPDATE accounts SET credential_version=credential_version+1").run();
+      if (cause === "removed") DB.sqlite.prepare("DELETE FROM sessions").run();
+      let cookie = cookieFor(token);
+      if (cause === "missing") cookie = "";
+      if (cause === "duplicate") cookie += `; ${cookie}`;
+      if (cause === "malformed") cookie = cookieFor("invalid");
+      const result = await fetchHandler(webRequest("/v1/auth/web-session", { cookie, ...(cause === "bearer-and-cookie" ? { token } : {}) }), env);
+      assert.equal(result.status, 401);
+      assert.deepEqual(await result.json(), { error: "SESSION_EXPIRED" });
+      assert.ok(result.headers.get("set-cookie").includes("Max-Age=0"));
+    } finally { DB.close(); }
+  });
+}
+
+test("anonymous site navigation is a normal no-session response, not a console error or a new cookie", async () => {
+  const { DB, env } = await emailFixture();
+  try {
+    for (const body of [{}, { statusOnly: true }]) {
+      const result = await fetchHandler(webRequest("/v1/auth/web-session", { body }), env);
+      assert.equal(result.status, 200);
+      assert.deepEqual(await result.json(), { account: null });
+      assert.equal(result.headers.get("set-cookie"), null);
+    }
+  } finally { DB.close(); }
+});
+
+test("cookie is host-only, HttpOnly, Secure, partitioned and bounded to the original 30-day expiry", () => {
+  const now = Date.now();
+  const value = sessionCookie("a".repeat(64), now + 90 * 86400000, now);
+  for (const piece of ["__Host-", "Path=/", "Max-Age=2592000", "Secure", "HttpOnly", "SameSite=None", "Partitioned"]) assert.ok(value.includes(piece));
+  assert.equal(value.includes("Domain="), false);
+  assert.ok(sessionCookie("a".repeat(64), now - 1000, now).includes("Max-Age=0"));
+  assert.equal(webSessionToken(webRequest("/", { cookie: `other=x; ${cookieFor("a".repeat(64))}` })), "a".repeat(64));
+});
+
+test("web logout revokes remembered session, clears cookie and does not revoke another device", async () => {
+  const { DB, env, token } = await emailFixture();
+  const other = "f".repeat(64);
+  try {
+    const now = Date.now();
+    DB.sqlite.prepare("INSERT INTO sessions (token_hash,account_id,expires_at,created_at,last_used_at,credential_version) VALUES (?,'stable-id',?,?,?,0)").run(await hmacHex(env.SESSION_PEPPER, other), now + 600000, now, now);
+    const result = await fetchHandler(webRequest("/v1/auth/logout", { cookie: cookieFor(token), token }), env);
+    assert.equal(result.status, 200);
+    assert.ok(result.headers.get("set-cookie").includes("Max-Age=0"));
+    assert.equal(await sessionStatus(env, token), 401);
+    assert.equal(await sessionStatus(env, other), 200);
+  } finally { DB.close(); }
+});
+
+for (const context of ["web", "native", "hostile"]) {
+  test(`only a trusted website's successful password+email-code login gets a remembered cookie: ${context}`, async t => {
+    const { DB, env } = await emailFixture();
+    const provider = emailProvider(t);
+    try {
+      const challenge = await fetchHandler(post("/v1/auth/password/login", { email: "old@example.test", password: "six123" }), env);
+      assert.equal(challenge.status, 202);
+      const { challengeId } = await challenge.json();
+      const request = webRequest("/v1/auth/password/verify-login-code", {
+        body: { challengeId, code: provider.otp },
+        ...(context === "native" ? { marker: "" } : context === "hostile" ? { origin: "https://evil.test" } : {}),
+      });
+      const verified = await fetchHandler(request, env);
+      assert.equal(verified.status, 200);
+      const data = await verified.json();
+      const cookie = verified.headers.get("set-cookie");
+      if (context !== "web") assert.equal(cookie, null);
+      else {
+        assert.ok(cookie.includes(`=${data.accessToken};`));
+        assert.ok(cookie.includes("HttpOnly"));
+        const resumed = await fetchHandler(webRequest("/v1/auth/web-session", { cookie: cookie.split(";")[0] }), env);
+        assert.equal(resumed.status, 200);
+        assert.equal((await resumed.json()).account.userId, "stable-id");
+      }
+    } finally { DB.close(); }
+  });
+}
 
 class SqliteD1 {
   constructor() {
