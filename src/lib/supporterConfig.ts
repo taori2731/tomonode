@@ -10,15 +10,17 @@ export type SupporterConfig = {
   enabled: boolean;
   provider: "stripe";
   monthlyAmount: number;
-  currency: "JPY";
+  currency: "USD";
+  taxBehavior: "exclusive";
   freeServerLimit: number;
 };
 
 export const supportConfig: SupporterConfig = {
   enabled: false,
   provider: "stripe",
-  monthlyAmount: 500,
-  currency: "JPY",
+  monthlyAmount: 3,
+  currency: "USD",
+  taxBehavior: "exclusive",
   freeServerLimit: 3,
 };
 

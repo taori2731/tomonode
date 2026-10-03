@@ -41,7 +41,7 @@ describe("アプリ設定", () => {
     expect(screen.getByRole("heading", { name: "TomoNodeを応援" })).toBeInTheDocument();
     expect(screen.getByText("支援は任意です。安定して提供している機能と安全機能は、これからも全員が無料で利用できます。")).toBeInTheDocument();
     expect(screen.getByText("Stripeの応援プランは準備中")).toBeInTheDocument();
-    expect(screen.getByText("￥500 / 月")).toBeInTheDocument();
+    expect(screen.getByText("$3 / 月＋適用税")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "本番受付は準備中" })).toBeDisabled();
     expect(screen.queryByRole("link", { name: "受取設定の手順（開発者向け）" })).not.toBeInTheDocument();
     expect(screen.getByText("提供中の先行体験を任意で利用（現在は対象なし）")).toBeInTheDocument();
@@ -72,8 +72,9 @@ describe("アプリ設定", () => {
     supportConfig.enabled = true;
     vi.spyOn(backend, "listFixedPlayers").mockResolvedValue([]);
     const account = vi.fn();
+    vi.spyOn(backend, "accountBillingStatus").mockResolvedValue({signedIn:false,enabled:false});
     render(<I18nProvider><AppSettingsDialog initialSection="plan" onAccount={account} servers={[]} statuses={{}} onStatusesChanged={() => undefined} onAppearanceChanged={() => undefined} onClose={() => undefined} notify={() => undefined} fail={vi.fn()} /></I18nProvider>);
-    fireEvent.click(screen.getByRole("button", { name: "Stripeで応援プランに申し込む" }));
+    fireEvent.click(await screen.findByRole("button", { name: "ログインしてプランを確認" }));
     expect(account).toHaveBeenCalledOnce();
   });
 

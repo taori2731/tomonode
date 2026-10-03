@@ -145,6 +145,7 @@ export function AppContent() {
   const [accountProfile, setAccountProfile] = useState<AccountProfile | null>(null);
   const [accountProfileLoaded, setAccountProfileLoaded] = useState(false);
   const accountProfileRevision = useRef(0);
+  const accountBillingReturnRef = useRef<"plan" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ServerProfile>();
   const [busyAction, setBusyAction] = useState("");
   const [toast, setToast] = useState("");
@@ -164,6 +165,23 @@ export function AppContent() {
   const updateAccountProfile = useCallback((profile: AccountProfile | null) => {
     accountProfileRevision.current += 1;
     setAccountProfile(profile);
+    if (profile && accountBillingReturnRef.current === "plan") {
+      accountBillingReturnRef.current = null;
+      setShowAccount(false);
+      setSettingsSection("plan");
+      setShowAppSettings(true);
+    }
+  }, []);
+
+  const openAccountForBilling = useCallback(() => {
+    // A cached profile may remain after an expired session. Clear only the UI
+    // profile so the next dialog is unambiguously a login, without touching
+    // servers or attempting to revoke an already-expired session remotely.
+    accountBillingReturnRef.current = "plan";
+    accountProfileRevision.current += 1;
+    setAccountProfile(null);
+    setShowAppSettings(false);
+    setShowAccount(true);
   }, []);
 
   useEffect(() => {
@@ -506,7 +524,7 @@ export function AppContent() {
       {showInvite && selected ? selectedIsPalworld ? <PalworldInviteDialog key={selected.id} server={selected} onClose={() => setShowInvite(false)} notify={setToast} /> : <InviteDialog server={selected} status={selectedStatus} onClose={() => setShowInvite(false)} notify={setToast} /> : null}
       {showCrossplayInvite && selected?.serverType === "paper" ? <CrossplayInviteDialog server={selected} status={selectedStatus} onClose={() => setShowCrossplayInvite(false)} notify={setToast} /> : null}
       {showAccount ? <AccountDialog locale={locale} initialProfile={accountProfile} profileLoaded={accountProfileLoaded} onProfileChange={updateAccountProfile} onClose={() => setShowAccount(false)} /> : null}
-      {showAppSettings ? <AppSettingsDialog initialSection={settingsSection} onAccount={() => { setShowAppSettings(false); setShowAccount(true); }} server={selected} status={selected ? selectedStatus : undefined} servers={servers} statuses={statuses} onStatusesChanged={(values) => setStatuses((current) => ({ ...current, ...values }))} onAppearanceChanged={theme.setAppearance} onClose={() => setShowAppSettings(false)} notify={setToast} fail={setError} /> : null}
+      {showAppSettings ? <AppSettingsDialog initialSection={settingsSection} onAccount={openAccountForBilling} server={selected} status={selected ? selectedStatus : undefined} servers={servers} statuses={statuses} onStatusesChanged={(values) => setStatuses((current) => ({ ...current, ...values }))} onAppearanceChanged={theme.setAppearance} onClose={() => setShowAppSettings(false)} notify={setToast} fail={setError} /> : null}
       {registrationLimit !== null ? <div className="modal-backdrop"><section className="wizard limit-dialog" role="dialog" aria-modal="true" aria-labelledby="registration-limit-title"><h2 id="registration-limit-title">Freeプランでは3個まで管理できます</h2><p>現在の登録数：{registrationLimit} / 3個</p><p>登録済みサーバーの起動・保存・バックアップは引き続き利用できます。登録解除はフォルダーやワールドの削除とは別です。</p><button type="button" onClick={() => setRegistrationLimit(null)}>閉じる</button><button type="button" onClick={() => { setRegistrationLimit(null); setSettingsSection("plan"); setShowAppSettings(true); }}>応援プランを見る（受付準備中）</button></section></div> : null}
       {deleteTarget ? <DeleteServerDialog server={deleteTarget} status={statuses[deleteTarget.id] ?? stoppedStatus(deleteTarget)} onClose={() => setDeleteTarget(undefined)} fail={setError} onDeleted={(result: DeleteServerResult) => {
         const next = servers.filter((item) => item.id !== deleteTarget.id);

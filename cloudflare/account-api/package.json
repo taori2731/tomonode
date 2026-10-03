@@ -5,11 +5,14 @@
   "scripts": {
     "dev": "wrangler dev",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run && node --test integration/browser-auth-sqlite.node.mjs"
+    "test": "vitest run && node --test integration/browser-auth-sqlite.node.mjs integration/billing-sqlite.node.mjs"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
     "wrangler": "^4.45.0"
+  },
+  "dependencies": {
+    "stripe": "23.0.0"
   }
 }

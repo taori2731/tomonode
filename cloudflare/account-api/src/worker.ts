@@ -1,4 +1,6 @@
-export interface Env {
+import { handleBilling, type BillingEnv } from "./billing.ts";
+
+export interface Env extends BillingEnv {
   DB: D1Database;
   RESEND_API_KEY: string;
   RESEND_FROM: string;
@@ -1208,9 +1210,11 @@ function accountPageCorsMethods(pathname: string): string | null {
     "/v1/account/email-change/request",
     "/v1/auth/logout",
     "/v1/auth/browser/approve",
+    "/v1/billing/checkout",
+    "/v1/billing/portal",
   ]);
   if (postPaths.has(pathname)) return "POST, OPTIONS";
-  if (pathname === "/v1/auth/browser/request") return "GET, OPTIONS";
+  if (["/v1/auth/browser/request", "/v1/billing/status", "/v1/membership/lease"].includes(pathname)) return "GET, OPTIONS";
   return null;
 }
 
@@ -1674,7 +1678,9 @@ export async function fetchHandler(request: Request, env: Env): Promise<Response
     } else if (request.method === "DELETE" && url.pathname === "/v1/me/avatar") {
       response = await deleteAvatar(request, env);
     } else {
-      response = fail(404, "NOT_FOUND");
+      response = await handleBilling(request, env, () => authenticate(request, env),
+        account => rateLimitAccountAction(env, request, account, "billing", Date.now(), 20))
+        ?? fail(404, "NOT_FOUND");
     }
   } catch {
     response = fail(500, "SERVICE_UNAVAILABLE");

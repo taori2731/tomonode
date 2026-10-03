@@ -41,6 +41,20 @@
           <p id="pairing-expiry" class="pairing-expiry"></p>
         </section>
 
+        <section id="billing-return-view" class="view" aria-labelledby="page-title" hidden>
+          <div class="signed-in-details">
+            <p id="billing-return-note"></p>
+          </div>
+          <ol class="billing-return-steps">
+            <li data-i18n="billingReturnApp">TomoNodeアプリに戻り、購入を開始したアカウントを確認してください。</li>
+            <li data-i18n="billingReturnRefresh">「TomoNodeを応援」の「会員状態を再確認」を押してください。</li>
+            <li id="billing-return-next"></li>
+          </ol>
+          <p class="step-copy" data-i18n="billingReturnSafety">このページのURLは支払いや契約の証明にはなりません。特典は支払い情報の確認後に反映されます。</p>
+          <button id="billing-return-login" class="secondary-button" type="button" data-i18n="billingReturnLogin">Webのログイン画面を開く</button>
+          <a class="secondary-link" href="/" data-i18n="backHome">TomoNode に戻る</a>
+        </section>
+
         <section id="login-view" class="view" aria-labelledby="page-title">
           <form id="login-form" novalidate>
             <div class="field">

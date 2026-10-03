@@ -542,7 +542,7 @@ let browser;
   await page.locator(".settings-dialog-layout nav").getByRole("button", { name: "TomoNodeを応援" }).click();
   await page.getByRole("heading", { name: "TomoNodeを応援" }).waitFor();
   await page.getByText("Stripeの応援プランは準備中", { exact: true }).waitFor();
-  await page.getByText("￥500 / 月", { exact: true }).waitFor();
+  await page.getByText("$3 / 月＋適用税", { exact: true }).waitFor();
   if (await page.getByRole("button", { name: "本番受付は準備中" }).isEnabled()) throw new Error("準備中なのに申し込みが有効です");
   await page.locator(".app-settings-dialog").getByRole("button", { name: "閉じる" }).click();
 

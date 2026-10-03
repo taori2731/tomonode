@@ -18,11 +18,30 @@ Existing `RESEND_API_KEY`, `RESEND_FROM`, `AUTH_CODE_PEPPER`, and `SESSION_PEPPE
 
 ## Database migration and rollout
 
-Apply all pending migrations, including `0004_email_change_and_identity.sql`, before deploying this Worker:
+Apply all pending migrations, including `0004_email_change_and_identity.sql` and the additive `0005_billing.sql`, before deploying this Worker:
 
 ```powershell
 npx wrangler d1 migrations apply tomonode-accounts --remote
 ```
+
+Before applying `0005_billing.sql` to a live database, take an approved D1 backup and confirm that the Worker source, Stripe mode, Price, webhook, and signing public key are the matching release. The migration adds billing-only tables and indexes; it does not convert legacy subscriptions into Supporter qualifications.
+
+## Supporter billing rollout
+
+The current Worker source contains the Stripe Checkout, Customer Portal, signed webhook reconciliation, and membership-lease routes. They are deliberately fail-closed until all of the following are set in the same environment:
+
+- `BILLING_ENABLED=true`
+- `BILLING_MODE=test` or `live`, matching the Stripe key and events
+- `STRIPE_PRICE_ID` for the fixed USD 3/month, quantity-one, exclusive-tax Price
+- `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` as Worker secrets only
+- `MEMBERSHIP_SIGNING_JWK` as a Worker secret only; the matching public key and `keyId: supporter-v1` must be bundled into the desktop release
+- `APP_BASE_URL=https://tomonode.site`
+
+Do not enable `BILLING_ENABLED` until the terms/privacy URLs, tax and selling-region policy, Customer Portal settings, and the payment-to-qualification flow have been accepted in that same environment. A successful Stripe return page is not proof of payment and must not grant a membership. The desktop app keeps `supportConfig.enabled=false` until the signed release and installed-app acceptance are complete.
+
+Read-only preflight checks should verify the public `/v1/billing/status` route, the remote migration list, and secret names without printing values. A Wrangler dry-run validates the bundle only; it does not deploy the Worker or apply D1 migrations.
+
+Checkout also reads the active default Customer Portal configuration before creating a customer or payment session. It requires the same Stripe mode, period-end cancellation without proration, subscription updates disabled, and payment-method updates and invoice history enabled. An absent, ambiguous, unsafe or unreadable configuration prevents purchase. The restricted key therefore needs read access to Portal configurations as well as session creation; do not grant broader access just to bypass a denial. Portal sessions explicitly use the inspected configuration and are returned only when customer, mode, configuration, return URL and Stripe URL match. These checks do not verify legal URL content, retention offers, tax obligations or the full customer cancellation experience; those remain launch gates. Never solve a failed check by removing the safeguard.
 
 The migrations are additive: they retain existing account/session data and add Firebase account linkage, credential versions, display names, private avatar BLOB columns, login challenges, purpose-bound enrollment proofs, and short-lived browser authorization requests. Browser requests store only the user-facing pairing code plus its HMAC, the PKCE-style challenge HMAC, status, expiry, and (after consent) the account ID and credential version. They never store a desktop verifier or access token. A password login challenge holds the Firebase UID privately, but does not link it to a legacy account until the email code has been consumed; this keeps a password-only attempt from disabling the legacy email-code route. Linking increments the account credential version, so earlier sessions stop authenticating. A legacy 0.5.7 OTP verification can no longer create a session after that account has a Firebase UID; accounts that have not enrolled retain the old route temporarily so a staged desktop rollout does not lock them out. New clients must use the password-first endpoints only.
 
@@ -77,4 +96,6 @@ Email changes reauthenticate the current password, reserve the target address, a
 
 ## Local checks
 
-Run `npm run typecheck` and `npm test` from `cloudflare/account-api`. The test script runs Vitest and then `node --test integration/browser-auth-sqlite.node.mjs`; the latter applies migrations 0001–0004 to an in-memory SQLite database and exercises browser authorization, email changes, identity preservation, credential races, and injected provider/database failures without real email or production account changes. Keep the `.node.mjs` suffix so workspace-wide Vitest discovery does not treat this `node:test` file as a Vitest test.
+Run `npm run typecheck` and `npm test` from `cloudflare/account-api`. The test script runs Vitest and then the `browser-auth-sqlite.node.mjs` and `billing-sqlite.node.mjs` integration suites. They apply migrations to in-memory SQLite databases and exercise browser authorization, email changes, identity preservation, credential races, injected provider/database failures, and billing with mocked Stripe HTTP, without real email or production account changes. The billing suite also verifies authenticated requests cannot call Stripe or write billing records while `BILLING_ENABLED=false`. Keep the `.node.mjs` suffix so workspace-wide Vitest discovery does not treat these `node:test` files as Vitest tests.
+
+The checked-in `wrangler.toml` explicitly sets `BILLING_ENABLED="false"` for the initial production rollout. Deploying this configuration does not enable payments. Do not remove that guard merely because migrations or deployment pass; finish the terms/privacy, tax and selling-region, live payment-to-qualification, Portal cancellation, and installed-app acceptance checks described above first. Release preparation is recorded in `docs/releases/0.5.14-preflight.md`.

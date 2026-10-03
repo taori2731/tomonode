@@ -1,3 +1,8 @@
+export interface AccountBillingStatus {
+  signedIn: boolean;
+  enabled: boolean;
+}
+
 export interface AccountProfile {
   userId?: string | null;
   email: string;
