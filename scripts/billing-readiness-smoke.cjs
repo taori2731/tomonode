@@ -27,7 +27,7 @@ async function main() {
     mkdirSync(screenshots,{recursive:true});
     browser=await chromium.launch({headless:true,channel:"chrome"});
     const checks=[];
-    for(const scenario of ["disabled","signed-out","unavailable","checkout","portal","switched-off"]) {
+    for(const scenario of ["disabled","signed-out","unavailable","checkout","portal","switched-off","recovery-failed","invalid-qualification","paid-recovery"]) {
       const page=await browser.newPage({viewport:{width:1680,height:940},locale:"en-US"});
       const errors=[],remote=[];
       page.on("pageerror",error=>errors.push(error.message));
@@ -35,7 +35,7 @@ async function main() {
       await page.addInitScript(({scenario,member,profile})=>{
         localStorage.setItem("server-hub:language:v1","en");
         localStorage.setItem("server-hub:theme:v1","dark");
-        window.__billingQa={scenario,member:scenario==="portal"?{...member,plan:"supporter",state:"verified",serverLimit:null}:scenario==="signed-out"?{...member,state:"signed_out"}:member,profile:scenario==="signed-out"?null:profile,calls:[],opened:[],statusCalls:0};
+        window.__billingQa={scenario,member:scenario==="portal"?{...member,plan:"supporter",state:"verified",serverLimit:null}:scenario==="signed-out"?{...member,state:"signed_out"}:member,profile:scenario==="signed-out"?null:profile,calls:[],opened:[],statusCalls:0,recoveryCalls:0,membershipReads:[]};
       },{scenario,member,profile});
       await page.route("https://tomonode-account-api.rafaerunacaya27.workers.dev/**",route=>{remote.push(route.request().url());return route.abort();});
       await page.route(/\/src\/lib\/supporterConfig\.ts(?:\?.*)?$/,async route=>{
@@ -48,8 +48,11 @@ async function main() {
         await route.fulfill({response,body:source+`
 backend.accountLoadSession=async()=>window.__billingQa.profile;
 backend.isDesktop=true;
-backend.membershipStatus=async()=>window.__billingQa.member;
+backend.membershipStatus=async(force)=>{const qa=window.__billingQa;qa.membershipReads.push(force===true);return qa.member;};
 backend.accountBillingStatus=async()=>{const qa=window.__billingQa;qa.statusCalls++;if(qa.scenario==='unavailable')throw Error('fixture-network-error');return {signedIn:qa.scenario!=='signed-out',enabled:!['disabled','signed-out','switched-off'].includes(qa.scenario)};};
+// Explicit recovery is a native-only command. Keep every provider boundary
+// synthetic, rather than falling through to the intentionally rejecting demo.
+backend.accountBillingReconcile=async()=>{const qa=window.__billingQa;qa.recoveryCalls++;if(qa.scenario==='recovery-failed')throw Error('fixture-private-provider-error');if(qa.scenario==='invalid-qualification')qa.member={...qa.member,state:'invalid_qualification'};if(qa.scenario==='paid-recovery')qa.member={...qa.member,plan:'supporter',state:'verified',serverLimit:null};};
 backend.accountBillingSession=async(portal)=>{window.__billingQa.calls.push(portal);return portal?'https://billing.stripe.com/p/session/fixture':'https://checkout.stripe.com/c/pay/fixture';};
 backend.accountBrowserAuthStart=async()=>({browserUrl:'https://tomonode.site/account.html?request=0123456789abcdef0123456789abcdef&mode=login&lang=en',requestId:'0123456789abcdef0123456789abcdef',userCode:'ABCD-2345',expiresInSeconds:600,intervalSeconds:1});
 backend.accountBrowserAuthPoll=async()=>{const qa=window.__billingQa;qa.scenario='checkout';qa.member={...qa.member,state:'free'};qa.profile=${JSON.stringify(profile)};return {status:'complete',account:qa.profile};};
@@ -71,6 +74,7 @@ backend.accountBrowserAuthPoll=async()=>{const qa=window.__billingQa;qa.scenario
       await dialog.getByRole("button",{name:"Support TomoNode",exact:true}).click();
       const panel=dialog.locator(".supporter-benefits");
       await panel.getByRole("heading",{name:"Supporter",exact:true}).waitFor();
+      assert.equal(await page.evaluate(()=>window.__billingQa.recoveryCalls),0,"Opening a panel must not reconcile billing");
       if(scenario==="disabled") {
         const button=panel.getByRole("button",{name:"Enrollment is being prepared"});
         await button.waitFor(); assert.ok(await button.isDisabled());
@@ -99,14 +103,36 @@ backend.accountBrowserAuthPoll=async()=>{const qa=window.__billingQa;qa.scenario
         await page.evaluate(()=>{window.__billingQa.scenario="switched-off";});
         await button.click();
         await panel.getByRole("button",{name:"Enrollment is being prepared"}).waitFor();
+      } else if(["recovery-failed","invalid-qualification","paid-recovery"].includes(scenario)) {
+        await panel.getByRole("button",{name:"Subscribe with Stripe",exact:true}).waitFor();
+        await panel.getByRole("button",{name:"Refresh membership status"}).click();
+        if(scenario==="paid-recovery") {
+          const manage=panel.getByRole("button",{name:"Manage subscription and payments",exact:true});
+          await manage.waitFor(); assert.ok(await manage.isEnabled());
+          assert.equal(await panel.locator(".membership-summary strong").innerText(),"Supporter");
+        } else {
+          const blocked=panel.getByRole("button",{name:"Could not check availability",exact:true});
+          await blocked.waitFor(); assert.ok(await blocked.isDisabled());
+          assert.equal(await panel.getByText("fixture-private-provider-error",{exact:true}).count(),0);
+          assert.equal(await panel.getByRole("button",{name:"Manage subscription and payments",exact:true}).count(),0);
+          await blocked.scrollIntoViewIfNeeded();
+          await page.screenshot({path:path.join(screenshots,`billing-${scenario}-blocked.png`)});
+          await page.evaluate(()=>{const qa=window.__billingQa;qa.scenario="checkout";qa.member={...qa.member,state:"free"};});
+          await panel.getByRole("button",{name:"Refresh membership status"}).click();
+          const subscribe=panel.getByRole("button",{name:"Subscribe with Stripe",exact:true});
+          await subscribe.waitFor(); assert.ok(await subscribe.isEnabled());
+        }
       } else {
         await panel.getByRole("button",{name:scenario==="portal"?"Manage subscription and payments":"Subscribe with Stripe",exact:true}).click();
         const notice=panel.getByText("Stripe opened in your browser. Refresh membership after payment.",{exact:true});
         await notice.waitFor(); await notice.scrollIntoViewIfNeeded();
       }
-      const state=await page.evaluate(()=>({calls:window.__billingQa.calls,opened:window.__billingQa.opened}));
+      const state=await page.evaluate(()=>({calls:window.__billingQa.calls,opened:window.__billingQa.opened,recoveryCalls:window.__billingQa.recoveryCalls,membershipReads:window.__billingQa.membershipReads}));
       assert.deepEqual(state.calls,scenario==="portal"?[true]:scenario==="checkout"?[false]:[]);
       assert.equal(state.opened.length,["checkout","portal","signed-out"].includes(scenario)?1:0);
+      const expectedRecovery=["unavailable","switched-off","paid-recovery"].includes(scenario)?1:["recovery-failed","invalid-qualification"].includes(scenario)?2:0;
+      assert.equal(state.recoveryCalls,expectedRecovery,"Only explicit enabled, signed-in refreshes may reconcile");
+      if(expectedRecovery>0)assert.ok(state.membershipReads.includes(true),"Recovery must be followed by a forced qualification read");
       assert.deepEqual(errors,[]); assert.deepEqual(remote,[]);
       assert.ok((await page.locator("body").innerText()).includes("TomoNode"));
       await page.screenshot({path:path.join(screenshots,`billing-${scenario}.png`)});
@@ -119,10 +145,10 @@ backend.accountBrowserAuthPoll=async()=>{const qa=window.__billingQa;qa.scenario
         assert.ok(buttonBounds&&buttonBounds.x>=0&&buttonBounds.x+buttonBounds.width<=391,"Mobile billing button overflows");
         await page.screenshot({path:path.join(screenshots,"billing-mobile.png")});
       }
-      checks.push({scenario,pass:true,pageIdentity:true,notBlank:true,noOverlay:true,consoleErrors:errors.length,remoteBillingRequests:remote.length});
+      checks.push({scenario,pass:true,pageIdentity:true,notBlank:true,noOverlay:true,consoleErrors:errors.length,remoteBillingRequests:remote.length,recoveryCalls:state.recoveryCalls});
       await page.close();
     }
-    console.log(JSON.stringify({browserPath:"Browser plugin not available; repository Playwright",url:base,screenshots,checks},null,2));
+    console.log(JSON.stringify({browserPath:"Repository Playwright regression with synthetic provider boundaries",url:base,screenshots,checks},null,2));
   } finally { await browser?.close(); server?.kill(); }
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});
