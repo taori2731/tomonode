@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import Stripe from "stripe";
-import { handleBilling, validPrice, validPortalConfiguration, billingConfigured, stripeDestination, verifiedPaidUntil, processBillingEvent } from "../src/billing.ts";
+import { handleBilling, validPrice, validPortalConfiguration, billingConfigured, stripeDestination, verifiedPaidUntil, processBillingEvent, reconcileAccountBilling } from "../src/billing.ts";
 import { fetchHandler } from "../src/worker.ts";
 
 class SqliteD1 {
@@ -18,6 +18,7 @@ class SqliteD1 {
     let args = [];
     const s = { bind: (...values) => { args=values; return s; },
       first: async () => this.sqlite.prepare(sql).get(...args) ?? null,
+      all: async () => ({ success: true, results: this.sqlite.prepare(sql).all(...args) }),
       run: async () => ({ success: true, meta: { changes: Number(this.sqlite.prepare(sql).run(...args).changes) } }) };
     return s;
   }
@@ -187,6 +188,99 @@ test("refund financial hold survives stale invoice.paid",async t=>{
   await processBillingEvent(env,event("invoice.paid","evt_old_paid",{id:"in_test"}),f.api);
   assert.equal((await route(env,"/v1/membership/lease","GET")).status,403);
   assert.equal(DB.sqlite.prepare("SELECT financial_hold FROM billing_customers").get().financial_hold,1);
+});
+
+test("explicit account reconciliation recovers a paid purchase without any webhook or Stripe mutation",async t=>{
+  const {DB,env}=await fixture(t); bindCustomer(DB); const f=paidFixture(env);
+  const reads=[];
+  t.mock.method(globalThis,"fetch",async(input,init)=>{
+    assert.equal(init.method,"GET"); const u=new URL(String(input)); assert.equal(u.hostname,"api.stripe.com"); reads.push(u.pathname);
+    if(u.pathname==="/v1/subscriptions") { assert.equal(u.searchParams.get("customer"),"cus_test"); return Response.json({object:"list",has_more:false,data:[f.sub]}); }
+    if(u.pathname==="/v1/subscriptions/sub_test") return Response.json(f.sub);
+    if(u.pathname==="/v1/invoices/in_test") return Response.json(f.invoice);
+    if(u.pathname==="/v1/invoice_payments") return Response.json({object:"list",has_more:false,data:[f.payment]});
+    if(u.pathname==="/v1/payment_intents/pi_test") return Response.json(f.intent);
+    if(u.pathname==="/v1/charges/ch_test") return Response.json(f.charge);
+    throw Error("Unexpected provider request");
+  });
+  assert.equal((await route(env,"/v1/membership/lease","GET")).status,403);
+  const result=await route(env,"/v1/billing/reconcile","POST",{customer:"cus_other",accountId:"other"});
+  assert.deepEqual(await result.json(),{reconciled:true});
+  assert.equal((await route(env,"/v1/membership/lease","GET")).status,200);
+  assert.equal(DB.sqlite.prepare("SELECT count(*) AS n FROM billing_events").get().n,0);
+  assert.equal(DB.sqlite.prepare("SELECT count(*) AS n FROM billing_checkout").get().n,0);
+  assert.equal(reads.length,6);
+});
+test("account reconciliation handles cancellation and failed renewal when their notifications are missed",async t=>{
+  const {DB,env}=await fixture(t); bindCustomer(DB); const f=paidFixture(env);
+  await processBillingEvent(env,event("invoice.paid"),f.api);
+  f.api.subscriptions.list=async()=>({object:"list",has_more:false,data:[structuredClone(f.sub)]});
+  f.sub.cancel_at_period_end=true;
+  assert.equal((await reconcileAccountBilling(env,account,f.api)).status,200);
+  let lease=JSON.parse(Buffer.from((await (await route(env,"/v1/membership/lease","GET")).json()).payload,"base64url"));
+  assert.equal(lease.cancelAtPeriodEnd,true);
+  for(const status of ["past_due","canceled"]) {
+    f.sub.status="active";
+    await processBillingEvent(env,event("invoice.paid",`evt_reconcile_${status}`,{id:"in_test"}),f.api);
+    assert.equal((await route(env,"/v1/membership/lease","GET")).status,200);
+    f.sub.status=status;
+    assert.equal((await reconcileAccountBilling(env,account,f.api)).status,200);
+    assert.equal((await route(env,"/v1/membership/lease","GET")).status,403);
+  }
+});
+test("reconciliation never creates a customer or clears a financial hold",async t=>{
+  const {DB,env}=await fixture(t); let calls=0;
+  const api={subscriptions:{list:async()=>{calls++; throw Error("Must not contact Stripe");}}};
+  assert.deepEqual(await (await reconcileAccountBilling(env,account,api)).json(),{reconciled:false});
+  bindCustomer(DB); DB.sqlite.prepare("UPDATE billing_customers SET financial_hold=1").run();
+  assert.equal((await reconcileAccountBilling(env,account,api)).status,409);
+  assert.equal(calls,0); assert.equal(DB.sqlite.prepare("SELECT financial_hold FROM billing_customers").get().financial_hold,1);
+});
+test("reconciliation rejects ambiguous, cross-account, cross-mode and incomplete provider history before granting rights",async t=>{
+  const {DB,env}=await fixture(t); bindCustomer(DB); const f=paidFixture(env);
+  for(const change of [{has_more:true},{data:[{...f.sub,customer:"cus_other"}]},{data:[{...f.sub,livemode:true}]},
+    {data:[f.sub,f.sub]},{data:[{...f.sub,id:"invalid"}]}]) {
+    const api={...f.api,subscriptions:{...f.api.subscriptions,list:async()=>({object:"list",has_more:false,data:[f.sub],...change})}};
+    await assert.rejects(reconcileAccountBilling(env,account,api));
+    assert.equal((await route(env,"/v1/membership/lease","GET")).status,403);
+  }
+  f.api.subscriptions.list=async()=>({object:"list",has_more:false,data:[f.sub]});
+  const wrong={...f.api,subscriptions:{...f.api.subscriptions,retrieve:async()=>({...f.sub,id:"sub_other"})}};
+  await assert.rejects(reconcileAccountBilling(env,account,wrong));
+  assert.equal((await route(env,"/v1/membership/lease","GET")).status,403);
+});
+test("reconciliation cannot grant from unpaid, refunded or foreign account records",async t=>{
+  const {DB,env}=await fixture(t); bindCustomer(DB);
+  for(const change of [f=>f.invoice.status="open",f=>f.charge.amount_refunded=1,f=>f.sub.metadata.account_id="other"]){
+    const f=paidFixture(env); change(f); f.api.subscriptions.list=async()=>({object:"list",has_more:false,data:[f.sub]});
+    if(f.sub.metadata.account_id!==account.id) await assert.rejects(reconcileAccountBilling(env,account,f.api));
+    else await reconcileAccountBilling(env,account,f.api);
+    assert.equal((await route(env,"/v1/membership/lease","GET")).status,403);
+  }
+});
+test("reconciliation requires authentication, enablement and rate allowance before provider calls",async t=>{
+  const {env}=await fixture(t); let calls=0;
+  t.mock.method(globalThis,"fetch",async()=>{calls++; throw Error("Should be blocked");});
+  assert.equal((await handleBilling(req("/v1/billing/reconcile"),env,async()=>null,async()=>true)).status,401);
+  assert.equal((await route({...env,BILLING_ENABLED:"false"},"/v1/billing/reconcile")).status,503);
+  assert.equal((await handleBilling(req("/v1/billing/reconcile"),env,async()=>account,async()=>false)).status,429);
+  assert.equal(calls,0);
+});
+
+test("explicit reconciliation cannot take another account's subscription fence",async t=>{
+  const {DB,env}=await fixture(t); bindCustomer(DB); const f=paidFixture(env);
+  await processBillingEvent(env,event("invoice.paid"),f.api);
+  const original=DB.sqlite.prepare("SELECT fence FROM billing_reconciliation").get().fence;
+  const other={id:"account-other",email:"other@example.test",created_at:2};
+  DB.sqlite.prepare("INSERT INTO accounts(id,email,created_at,credential_version) VALUES (?,?,?,0)").run(other.id,other.email,other.created_at);
+  DB.sqlite.prepare("INSERT INTO billing_customers(account_id,mode,customer_id) VALUES (?,'test','cus_other')").run(other.id);
+  let reads=0;
+  const api={subscriptions:{list:async()=>({object:"list",has_more:false,data:[{...f.sub,customer:"cus_other",metadata:{account_id:other.id}}]}),
+    retrieve:async()=>{reads++; return f.sub;}}};
+  await assert.rejects(reconcileAccountBilling(env,other,api));
+  assert.equal(reads,0);
+  assert.equal(DB.sqlite.prepare("SELECT fence FROM billing_reconciliation").get().fence,original);
+  assert.equal((await route(env,"/v1/membership/lease","GET")).status,200);
 });
 test("zero applicable tax still qualifies; incomplete automatic tax never qualifies",async t=>{
   const {env}=await fixture(t); const f=paidFixture(env);

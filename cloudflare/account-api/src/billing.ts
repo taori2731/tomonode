@@ -193,18 +193,21 @@ export async function verifiedPaidUntil(api: Stripe, env: BillingEnv, sub: Strip
   const paidUntil = Math.min(item.current_period_end, line.period.end) * 1000;
   return Number.isSafeInteger(paidUntil) && paidUntil > Date.now() ? paidUntil : 0;
 }
-async function reconcile(env: BillingEnv, subscriptionId: string, api: Stripe) {
+async function reconcile(env: BillingEnv, subscriptionId: string, api: Stripe, expectedAccountId?: string) {
+  const known = await env.DB.prepare("SELECT account_id FROM billing_subscriptions WHERE subscription_id=? AND mode=?")
+    .bind(subscriptionId, env.BILLING_MODE).first<{account_id: string}>();
+  if (expectedAccountId && known && known.account_id !== expectedAccountId) throw new Error("unbound subscription");
   // Fence acquired BEFORE canonical fetch; overlapping stale responses cannot overwrite the newest owner.
   const fence = crypto.randomUUID();
   await env.DB.prepare(`INSERT INTO billing_reconciliation (subscription_id,mode,fence) VALUES (?,?,?)
     ON CONFLICT(subscription_id,mode) DO UPDATE SET fence=excluded.fence`)
     .bind(subscriptionId, env.BILLING_MODE, fence).run();
-  const known = await env.DB.prepare("SELECT account_id FROM billing_subscriptions WHERE subscription_id=? AND mode=?")
-    .bind(subscriptionId, env.BILLING_MODE).first<{account_id: string}>();
   const sub = await api.subscriptions.retrieve(subscriptionId);
   const owner = await env.DB.prepare("SELECT account_id, financial_hold FROM billing_customers WHERE customer_id=? AND mode=?")
     .bind(id(sub.customer), env.BILLING_MODE).first<{account_id: string; financial_hold: number}>();
-  if (!owner || sub.metadata.account_id !== owner.account_id || (known && owner.account_id !== known.account_id) || sub.livemode !== (env.BILLING_MODE === "live")) throw new Error("unbound subscription");
+  if (sub.id !== subscriptionId || !owner || sub.metadata.account_id !== owner.account_id
+    || (expectedAccountId && owner.account_id !== expectedAccountId)
+    || (known && owner.account_id !== known.account_id) || sub.livemode !== (env.BILLING_MODE === "live")) throw new Error("unbound subscription");
   const paidUntil = owner.financial_hold ? 0 : await verifiedPaidUntil(api, env, sub);
   await env.DB.prepare(`INSERT INTO billing_subscriptions
     (subscription_id,account_id,mode,price_id,status,paid_until,cancel_at_period_end,updated_at,fence)
@@ -214,6 +217,32 @@ async function reconcile(env: BillingEnv, subscriptionId: string, api: Stripe) {
     WHERE billing_subscriptions.account_id=excluded.account_id AND billing_subscriptions.mode=excluded.mode`)
     .bind(sub.id, owner.account_id, env.BILLING_MODE, env.STRIPE_PRICE_ID, sub.status, paidUntil, sub.cancel_at_period_end ? 1 : 0,
       Date.now(), fence, sub.id, env.BILLING_MODE, fence).run();
+}
+// Explicit, authenticated recovery for delayed webhooks. Never creates a Stripe
+// customer, subscription, payment or fake event, and never clears financial holds.
+export async function reconcileAccountBilling(env: BillingEnv, account: BillingAccount, api = stripe(env)): Promise<Response> {
+  const owner = await env.DB.prepare("SELECT customer_id, financial_hold FROM billing_customers WHERE account_id=? AND mode=?")
+    .bind(account.id, env.BILLING_MODE).first<Customer>();
+  if (!owner) return response({ reconciled: false });
+  if (owner.financial_hold) return fail("BILLING_REVIEW_REQUIRED", 409);
+  const subscriptions = await api.subscriptions.list({ customer: owner.customer_id, status: "all", limit: 100 });
+  if (subscriptions.object !== "list" || subscriptions.has_more !== false || !Array.isArray(subscriptions.data)) throw new Error("incomplete subscriptions");
+  const ids = new Set<string>();
+  for (const sub of subscriptions.data) {
+    if (!/^sub_[A-Za-z0-9]+$/.test(sub.id) || ids.has(sub.id) || id(sub.customer) !== owner.customer_id
+      || sub.livemode !== (env.BILLING_MODE === "live")) throw new Error("subscription context");
+    ids.add(sub.id);
+  }
+  const known = await env.DB.prepare("SELECT subscription_id FROM billing_subscriptions WHERE account_id=? AND mode=? AND status='active'")
+    .bind(account.id, env.BILLING_MODE).all<{subscription_id: string}>();
+  const targets = new Set(known.results.map(row => row.subscription_id));
+  for (const sub of subscriptions.data) {
+    if (sub.metadata?.account_id === account.id && blockingStatuses.has(sub.status)) targets.add(sub.id);
+  }
+  // Bound provider work; ambiguous/missing history is not proof of payment.
+  if (targets.size > 10 || [...targets].some(value => !ids.has(value))) throw new Error("subscription history");
+  for (const value of targets) await reconcile(env, value, api, account.id);
+  return response({ reconciled: true });
 }
 export async function processBillingEvent(env: BillingEnv, event: Stripe.Event, api = stripe(env)) {
   if (event.livemode !== (env.BILLING_MODE === "live")) throw new Error("event mode");
@@ -289,7 +318,7 @@ export async function handleBilling(request: Request, env: BillingEnv,
   authenticate: () => Promise<BillingAccount | null>, rateLimit: (account: BillingAccount) => Promise<boolean>): Promise<Response | null> {
   const path = new URL(request.url).pathname;
   if (path === "/v1/webhooks/stripe" && request.method === "POST") return webhook(request, env);
-  if (!((request.method === "POST" && ["/v1/billing/checkout","/v1/billing/portal"].includes(path))
+  if (!((request.method === "POST" && ["/v1/billing/checkout","/v1/billing/portal","/v1/billing/reconcile"].includes(path))
     || (request.method === "GET" && ["/v1/billing/status","/v1/membership/lease"].includes(path)))) return null;
   const account = await authenticate();
   if (!account) return fail("SESSION_EXPIRED", 401);
@@ -298,6 +327,7 @@ export async function handleBilling(request: Request, env: BillingEnv,
   if (!(await rateLimit(account))) return fail("RATE_LIMITED", 429);
   try {
     if (path === "/v1/membership/lease") return await lease(request, env, account);
+    if (path === "/v1/billing/reconcile") return await reconcileAccountBilling(env, account);
     if (path === "/v1/billing/portal") return await portal(env, account);
     return await checkout(env, account);
   } catch { return fail("BILLING_UNAVAILABLE", 502); }
