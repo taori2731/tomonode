@@ -1214,6 +1214,7 @@ function accountPageCorsMethods(pathname: string): string | null {
     "/v1/auth/browser/approve",
     "/v1/billing/checkout",
     "/v1/billing/portal",
+    "/v1/billing/reconcile",
   ]);
   if (postPaths.has(pathname)) return "POST, OPTIONS";
   if (["/v1/auth/browser/request", "/v1/billing/status", "/v1/membership/lease"].includes(pathname)) return "GET, OPTIONS";
