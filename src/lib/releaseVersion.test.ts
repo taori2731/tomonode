@@ -5,8 +5,11 @@ import cargoManifest from "../../src-tauri/Cargo.toml?raw";
 import cargoLock from "../../src-tauri/Cargo.lock?raw";
 import tauriConfig from "../../src-tauri/tauri.conf.json";
 import { backend } from "./backend";
+import releaseWorkflow from "../../.github/workflows/sign-windows-release.yml?raw";
+import nativeUpdater from "../../src-tauri/src/app_update.rs?raw";
+import { supportConfig } from "./supporterConfig";
 
-const releaseVersion = "0.5.14";
+const releaseVersion = "0.5.15";
 
 describe("release version alignment", () => {
   it("keeps app manifests and the browser demo on the same release candidate", async () => {
@@ -23,5 +26,21 @@ describe("release version alignment", () => {
     ]).toEqual([releaseVersion, releaseVersion, releaseVersion, releaseVersion, releaseVersion, releaseVersion]);
     expect(await backend.getAppVersion()).toBe(releaseVersion);
     expect((await backend.checkAppUpdate()).currentVersion).toBe(releaseVersion);
+  });
+  it("keeps the new draft guarded without enabling purchases or changing the updater identity", () => {
+    expect(releaseWorkflow).toContain(`if ($env:RELEASE_VERSION -ne "${releaseVersion}")`);
+    expect(releaseWorkflow).toContain(`if ($env:RELEASE_TAG -ne "v${releaseVersion}")`);
+    expect(releaseWorkflow).not.toContain("0.5.14");
+    expect(releaseWorkflow).toContain('if ($env:GITHUB_REF -ne "refs/heads/main")');
+    expect(releaseWorkflow).toContain("default: false");
+    expect(releaseWorkflow).toContain("--draft");
+    expect(releaseWorkflow).toContain("Refusing to overwrite an existing release");
+    expect(releaseWorkflow).toContain("Refusing to reuse an existing git tag");
+    expect(releaseWorkflow).toContain("if: ${{ inputs.publish }}");
+    expect(supportConfig.enabled).toBe(false);
+    expect(tauriConfig.identifier).toBe("local.minecraft-server-hub.desktop");
+    expect(nativeUpdater.match(/const DEFAULT_UPDATE_ENDPOINT: &str =\s*"([^"]+)"/)?.[1]).toBe(
+      "https://github.com/taori2731/tomonode-releases/releases/latest/download/latest.json",
+    );
   });
 });
