@@ -1649,6 +1649,82 @@ pub async fn account_billing_status(
 }
 
 #[tauri::command]
+pub async fn account_billing_reconcile(
+    api_base_url: String,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    let session = load_session()?.ok_or_else(network_error)?;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| network_error())?;
+    let result =
+        fetch_billing_reconciliation(&client, &api_base_url, &session.access_token).await?;
+    // A result from a previous account must not clear or authorize the new one.
+    if load_session()?
+        .as_ref()
+        .map(|value| value.access_token.as_str())
+        != Some(session.access_token.as_str())
+    {
+        return Err(network_error());
+    }
+    match result {
+        BillingReconciliation::Confirmed => Ok(()),
+        BillingReconciliation::SessionExpired | BillingReconciliation::Held => {
+            state
+                .membership
+                .revoke_current_session(&session.access_token)
+                .await?;
+            Err(network_error())
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum BillingReconciliation {
+    Confirmed,
+    SessionExpired,
+    Held,
+}
+
+// This response is only a recovery acknowledgement, never a paid entitlement.
+// The caller must still retrieve and verify a session-bound signed lease.
+async fn fetch_billing_reconciliation(
+    client: &reqwest::Client,
+    api_base_url: &str,
+    token: &str,
+) -> AppResult<BillingReconciliation> {
+    let response = client
+        .post(api_endpoint(api_base_url, "v1/billing/reconcile")?)
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(45))
+        .send()
+        .await
+        .map_err(|_| network_error())?;
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Ok(BillingReconciliation::SessionExpired);
+    }
+    if response.status() == StatusCode::CONFLICT {
+        let body = crate::secure_secrets::bounded_json::<serde_json::Value>(response, 4096).await?;
+        if body["error"].as_str() == Some("BILLING_REVIEW_REQUIRED") {
+            return Ok(BillingReconciliation::Held);
+        }
+        return Err(network_error());
+    }
+    if !response.status().is_success() {
+        return Err(network_error());
+    }
+    #[derive(Deserialize)]
+    struct Recovery {
+        reconciled: bool,
+    }
+    let recovery: Recovery = crate::secure_secrets::bounded_json(response, 4096).await?;
+    // No billing customer is a valid free account; it still needs a lease check.
+    let _ = recovery.reconciled;
+    Ok(BillingReconciliation::Confirmed)
+}
+
+#[tauri::command]
 pub async fn account_billing_session(
     api_base_url: String,
     portal: bool,
@@ -1723,11 +1799,11 @@ pub async fn account_logout(api_base_url: String, state: State<'_, AppState>) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountBillingStatus, AccountProfile, BROWSER_LOGIN_URL, BillingStatusResponse,
-        BrowserAuthPollRequest, BrowserAuthPollResponse, EmailChangeRequest, api_endpoint,
-        billing_status_view, browser_code_challenge, fetch_billing_status, random_browser_verifier,
-        valid_billing_pin, valid_browser_request_id, valid_browser_user_code,
-        validate_billing_destination, validate_browser_auth_url,
+        AccountBillingStatus, AccountProfile, BROWSER_LOGIN_URL, BillingReconciliation,
+        BillingStatusResponse, BrowserAuthPollRequest, BrowserAuthPollResponse, EmailChangeRequest,
+        api_endpoint, billing_status_view, browser_code_challenge, fetch_billing_reconciliation,
+        fetch_billing_status, random_browser_verifier, valid_billing_pin, valid_browser_request_id,
+        valid_browser_user_code, validate_billing_destination, validate_browser_auth_url,
     };
 
     #[test]
@@ -1851,6 +1927,83 @@ mod tests {
         ] {
             assert!(!valid_billing_pin(&pin));
         }
+    }
+
+    #[tokio::test]
+    async fn billing_recovery_uses_only_native_bearer_and_never_trusts_provider_details() {
+        use std::io::{Read, Write};
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        for (status, body, expected) in [
+            (
+                200,
+                r#"{"reconciled":true}"#.into(),
+                Some(BillingReconciliation::Confirmed),
+            ),
+            (
+                200,
+                r#"{"reconciled":false}"#.into(),
+                Some(BillingReconciliation::Confirmed),
+            ),
+            (
+                401,
+                "private provider details".into(),
+                Some(BillingReconciliation::SessionExpired),
+            ),
+            (
+                409,
+                r#"{"error":"BILLING_REVIEW_REQUIRED"}"#.into(),
+                Some(BillingReconciliation::Held),
+            ),
+            (409, r#"{"error":"other"}"#.into(), None),
+            (429, "private provider details".into(), None),
+            (502, "private provider details".into(), None),
+            (200, r#"{"reconciled":"yes"}"#.into(), None),
+            (200, r#"{"plan":"supporter"}"#.into(), None),
+            (200, "x".repeat(4097), None),
+            (302, "".into(), None),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let handler = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0; 1024];
+                while !request.windows(4).any(|v| v == b"\r\n\r\n") {
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0 && request.len() + n <= 8192);
+                    request.extend_from_slice(&chunk[..n]);
+                }
+                write!(stream, "HTTP/1.1 {status} fixture\r\nLocation: https://evil.invalid/\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                String::from_utf8(request).unwrap()
+            });
+            let result =
+                fetch_billing_reconciliation(&client, &base, "fixture-native-bearer").await;
+            match expected {
+                Some(expected) => assert_eq!(result.unwrap(), expected),
+                None => assert!(
+                    !result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("private provider details")
+                ),
+            }
+            let request = handler.join().unwrap().to_ascii_lowercase();
+            assert!(request.starts_with("post /v1/billing/reconcile "));
+            assert!(request.contains("authorization: bearer fixture-native-bearer"));
+            assert!(!request.contains("account_id"));
+        }
+        assert!(
+            fetch_billing_reconciliation(&client, "https://evil.invalid", "fixture-native-bearer")
+                .await
+                .is_err()
+        );
     }
 
     #[test]

@@ -23,6 +23,7 @@ export function SupporterBenefitsPanel({ onAccount, locale: localeOverride }: { 
   const statusRequest = useRef(0);
   const [billingStatus, setBillingStatus] = useState<AccountBillingStatus | null>(null);
   const [billingError, setBillingError] = useState(false);
+  const [recoveryFailed, setRecoveryFailed] = useState(false);
   const [checkVersion, setCheckVersion] = useState(0);
   const memberState = member?.state;
   useEffect(() => {
@@ -42,9 +43,9 @@ export function SupporterBenefitsPanel({ onAccount, locale: localeOverride }: { 
   }, [memberState, checkVersion]);
   const paid = member?.plan === "supporter";
   const signedOut = billingStatus?.signedIn === false || memberState === "signed_out" || memberState === "session_expired";
-  const billingReady = supportConfig.enabled && billingStatus?.enabled === true && !signedOut;
+  const billingReady = supportConfig.enabled && billingStatus?.enabled === true && !signedOut && !recoveryFailed;
   const billingLabel = !supportConfig.enabled ? t("productionPending") : signedOut ? billingCopy.login
-    : billingError ? billingCopy.checkFailed : !billingStatus ? billingCopy.checking
+    : billingError || recoveryFailed ? billingCopy.checkFailed : !billingStatus ? billingCopy.checking
     : billingReady ? paid ? billingCopy.manage : copy.supportButton : t("productionPending");
   const count = member ? String(member.registeredCount) : t("countChecking");
   const limit = paid && member?.serverLimit === null ? t("unlimited") : t("serverLimit", { count: String(member?.serverLimit ?? supportConfig.freeServerLimit) });
@@ -73,7 +74,24 @@ export function SupporterBenefitsPanel({ onAccount, locale: localeOverride }: { 
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setNotice("");
     statusRequest.current += 1; setBillingStatus(null); setBillingError(false);
-    try { await refresh(true); }
+    try {
+      if (supportConfig.enabled) {
+        const status = await backend.accountBillingStatus();
+        if (!mounted.current) return;
+        if (status.signedIn && status.enabled) {
+          await backend.accountBillingReconcile();
+          if (!mounted.current) return;
+        }
+      }
+      if (!await refresh(true)) throw new Error("Membership unavailable");
+      if (mounted.current) setRecoveryFailed(false);
+    } catch {
+      if (mounted.current) {
+        setRecoveryFailed(true); setNotice(t("refreshFailed"));
+        // Observe revocation/expiry if recovery rejected it; no retry or purchase.
+        await refresh(false);
+      }
+    }
     finally {
       busyRef.current = false;
       if (mounted.current) { setBusy(false); setCheckVersion(value => value + 1); }

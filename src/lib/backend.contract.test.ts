@@ -3,6 +3,9 @@ import { backend } from "./backend";
 import { brand } from "./brand";
 
 describe("ブラウザ用バックエンド契約", () => {
+  it("ブラウザデモから本番の課金照合を実行しない", async () => {
+    await expect(backend.accountBillingReconcile()).rejects.toThrow("not available in the browser demo");
+  });
   it("作成から安全停止・Delete確認削除まで本番と同じ状態遷移を保つ", async () => {
     const base = (await backend.listServers()).find((item) => item.serverType === "paper")!;
     await backend.stop("demo-vanilla");

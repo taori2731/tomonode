@@ -11,9 +11,86 @@ const member: MembershipView = {plan:"free",state:"free",registeredCount:0,serve
 beforeEach(() => {
   vi.spyOn(backend,"membershipStatus").mockResolvedValue(member);
   vi.spyOn(backend,"accountBillingStatus").mockResolvedValue({signedIn:true,enabled:true});
+  vi.spyOn(backend,"accountBillingReconcile").mockResolvedValue();
 });
 afterEach(() => { supportConfig.enabled=false; vi.restoreAllMocks(); vi.mocked(openExternalUrl).mockReset(); });
 describe("Stripe billing actions", () => {
+  it("reconciles only on explicit refresh, then reads the signed membership without opening Checkout", async () => {
+    supportConfig.enabled=true;
+    const billing=vi.spyOn(backend,"accountBillingSession");
+    render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    await screen.findByText("Free plan");
+    expect(backend.accountBillingReconcile).not.toHaveBeenCalled();
+    vi.mocked(backend.accountBillingReconcile).mockImplementation(async()=>{
+      vi.mocked(backend.membershipStatus).mockResolvedValue({...member,plan:"supporter",state:"verified",serverLimit:null});
+    });
+    fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Manage subscription and payments"})).toBeEnabled());
+    expect(backend.accountBillingReconcile).toHaveBeenCalledOnce();
+    expect(backend.membershipStatus).toHaveBeenCalledWith(true);
+    expect(billing).not.toHaveBeenCalled(); expect(openExternalUrl).not.toHaveBeenCalled();
+  });
+  it("blocks purchasing after failed recovery until a successful manual retry", async () => {
+    supportConfig.enabled=true;
+    const billing=vi.spyOn(backend,"accountBillingSession");
+    render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Subscribe with Stripe"})).toBeEnabled());
+    vi.mocked(backend.accountBillingReconcile).mockRejectedValue(new Error("private bearer/provider details"));
+    fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
+    await screen.findByText(/Membership refresh failed/, {selector:"p"});
+    expect(screen.getByRole("button",{name:"Could not check availability"})).toBeDisabled();
+    expect(screen.queryByText(/private bearer/)).not.toBeInTheDocument();
+    expect(billing).not.toHaveBeenCalled(); expect(openExternalUrl).not.toHaveBeenCalled();
+    vi.mocked(backend.accountBillingReconcile).mockResolvedValue();
+    fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Subscribe with Stripe"})).toBeEnabled());
+    expect(backend.accountBillingReconcile).toHaveBeenCalledTimes(2);
+  });
+  it("does not reconcile while billing is disabled, signed out, or the panel has closed", async () => {
+    const view=render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    await screen.findByText("Free plan");
+    fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
+    await waitFor(()=>expect(backend.membershipStatus).toHaveBeenCalledWith(true));
+    expect(backend.accountBillingReconcile).not.toHaveBeenCalled(); view.unmount();
+    supportConfig.enabled=true;
+    vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:false,enabled:false});
+    const next=render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Sign in to view plans"})).toBeEnabled());
+    expect(backend.accountBillingReconcile).not.toHaveBeenCalled();
+    let done!: (status:{signedIn:boolean;enabled:boolean})=>void;
+    vi.mocked(backend.accountBillingStatus).mockImplementation(()=>new Promise(resolve=>{done=resolve;}));
+    fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
+    next.unmount(); done({signedIn:true,enabled:true});
+    await Promise.resolve(); await Promise.resolve();
+    expect(backend.accountBillingReconcile).not.toHaveBeenCalled();
+  });
+  it("does not allow a recovery acknowledgement to replace unavailable or invalid signed qualification", async () => {
+    supportConfig.enabled=true;
+    const billing=vi.spyOn(backend,"accountBillingSession");
+    render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Subscribe with Stripe"})).toBeEnabled());
+    vi.mocked(backend.membershipStatus).mockResolvedValue({...member,state:"invalid_qualification"});
+    fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Could not check availability"})).toBeDisabled());
+    expect(backend.accountBillingReconcile).toHaveBeenCalledOnce();
+    expect(billing).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button",{name:"Manage subscription and payments"})).not.toBeInTheDocument();
+  });
+  it("coalesces recovery clicks and does not refresh qualifications after the panel closes", async () => {
+    supportConfig.enabled=true;
+    let done!:()=>void;
+    vi.mocked(backend.accountBillingReconcile).mockImplementation(()=>new Promise(resolve=>{done=resolve;}));
+    const view=render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    await screen.findByText("Free plan");
+    const refresh=screen.getByRole("button",{name:"Refresh membership status"});
+    fireEvent.click(refresh); fireEvent.click(refresh);
+    await waitFor(()=>expect(backend.accountBillingReconcile).toHaveBeenCalledOnce());
+    const reads=vi.mocked(backend.membershipStatus).mock.calls.length;
+    view.unmount(); done(); await Promise.resolve(); await Promise.resolve();
+    expect(backend.membershipStatus).toHaveBeenCalledTimes(reads);
+    expect(openExternalUrl).not.toHaveBeenCalled();
+  });
   it("does not open billing or grant benefits while production is disabled", async () => {
     const billing=vi.spyOn(backend,"accountBillingSession");
     render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
