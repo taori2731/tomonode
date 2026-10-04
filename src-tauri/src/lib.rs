@@ -61,12 +61,13 @@ use uuid::Uuid;
 
 use crate::{
     account_auth::{
-        account_billing_session, account_billing_status, account_browser_auth_cancel,
-        account_browser_auth_poll, account_browser_auth_start, account_enroll_password,
-        account_load_session, account_logout, account_password_login, account_remove_avatar,
-        account_request_code, account_request_email_change, account_request_enrollment_code,
-        account_request_password_reset, account_update_display_name, account_upload_avatar,
-        account_verify_code, account_verify_enrollment_code, account_verify_login_code,
+        account_billing_reconcile, account_billing_session, account_billing_status,
+        account_browser_auth_cancel, account_browser_auth_poll, account_browser_auth_start,
+        account_enroll_password, account_load_session, account_logout, account_password_login,
+        account_remove_avatar, account_request_code, account_request_email_change,
+        account_request_enrollment_code, account_request_password_reset,
+        account_update_display_name, account_upload_avatar, account_verify_code,
+        account_verify_enrollment_code, account_verify_login_code,
     },
     downloads::{download_server, http_client},
     error::{AppError, AppResult},
@@ -5168,6 +5169,7 @@ pub fn run() {
             account_load_session,
             account_billing_session,
             account_billing_status,
+            account_billing_reconcile,
             account_logout,
             check_app_update,
             install_app_update,

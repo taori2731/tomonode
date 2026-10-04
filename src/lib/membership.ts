@@ -34,9 +34,15 @@ export function useMembership() {
   const [error, setError] = useState("");
   const refresh = useCallback(async (force = false) => {
     // Test harnesses for unrelated screens can omit the optional new command.
-    if (!backend.membershipStatus) return;
-    try { setMember(await backend.membershipStatus(force)); setError(""); }
-    catch { setError("membership.refresh_failed"); }
+    if (!backend.membershipStatus) return false;
+    try {
+      const value = await backend.membershipStatus(force);
+      setMember(value);
+      const confirmed = !["unavailable", "offline", "invalid_qualification", "clock_invalid", "not_configured"].includes(value.state);
+      setError(confirmed ? "" : "membership.refresh_failed");
+      return confirmed;
+    }
+    catch { setError("membership.refresh_failed"); return false; }
   }, []);
   useEffect(() => {
     void refresh();

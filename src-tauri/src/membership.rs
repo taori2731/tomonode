@@ -177,6 +177,15 @@ pub(crate) fn verify_lab_lease(
     .is_ok()
 }
 impl MembershipService {
+    pub(crate) async fn revoke_current_session(&self, token: &str) -> AppResult<()> {
+        // An older lease fetch must finish before the held account is cleared.
+        let _refresh = self.refresh_lock.lock().await;
+        if account_auth::membership_session_token()?.as_deref() != Some(token) {
+            return Err(invalid());
+        }
+        self.clear()
+    }
+
     pub fn clear(&self) -> AppResult<()> {
         *self.cached.lock().unwrap() = None;
         *self.last_refresh.lock().unwrap() = None;
