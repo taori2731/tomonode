@@ -1,6 +1,8 @@
 export interface AccountBillingStatus {
   signedIn: boolean;
   enabled: boolean;
+  // Older API/native builds may omit this field; absence must never enable sales.
+  checkoutEnabled?: boolean;
 }
 
 export interface AccountProfile {

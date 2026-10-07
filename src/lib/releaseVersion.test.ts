@@ -8,10 +8,21 @@ import { backend } from "./backend";
 import releaseWorkflow from "../../.github/workflows/sign-windows-release.yml?raw";
 import nativeUpdater from "../../src-tauri/src/app_update.rs?raw";
 import { supportConfig } from "./supporterConfig";
+import { languageOptions, type AppLocale } from "./i18n";
+import { releaseAnnouncements } from "./releaseNews";
 
-const releaseVersion = "0.5.15";
+const releaseVersion = "0.5.16";
 
 describe("release version alignment", () => {
+  it.each(languageOptions.filter(option => option.value !== "system"))("publishes current update news for $value", ({ value }) => {
+    const current = releaseAnnouncements(value as AppLocale)[0];
+    expect(current.id).toBe(releaseVersion);
+    expect(current.date).toBe("2026-10-08");
+    expect(current.tag).toBe("FIX");
+    expect(current.title).toContain(releaseVersion);
+    expect(current.body.trim().length).toBeGreaterThan(40);
+    expect(current.body).toContain("Stripe");
+  });
   it("keeps app manifests and the browser demo on the same release candidate", async () => {
     const cargoManifestVersion = cargoManifest.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
     const cargoLockVersion = cargoLock.match(/\[\[package\]\]\s*name = "minecraft-server-hub"\s*version = "([^"]+)"/s)?.[1];
@@ -30,7 +41,7 @@ describe("release version alignment", () => {
   it("keeps the new draft guarded without enabling purchases or changing the updater identity", () => {
     expect(releaseWorkflow).toContain(`if ($env:RELEASE_VERSION -ne "${releaseVersion}")`);
     expect(releaseWorkflow).toContain(`if ($env:RELEASE_TAG -ne "v${releaseVersion}")`);
-    expect(releaseWorkflow).not.toContain("0.5.14");
+    expect(releaseWorkflow).not.toContain("0.5.15");
     expect(releaseWorkflow).toContain('if ($env:GITHUB_REF -ne "refs/heads/main")');
     expect(releaseWorkflow).toContain("default: false");
     expect(releaseWorkflow).toContain("--draft");

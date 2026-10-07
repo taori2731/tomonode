@@ -1553,12 +1553,15 @@ fn valid_billing_pin(pin: &serde_json::Value) -> bool {
 pub struct AccountBillingStatus {
     pub signed_in: bool,
     pub enabled: bool,
+    pub checkout_enabled: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BillingStatusResponse {
     enabled: bool,
+    #[serde(default)]
+    checkout_enabled: bool,
     mode: Option<String>,
     currency: String,
     monthly_amount: u32,
@@ -1574,9 +1577,11 @@ fn billing_status_view(
     }
     let mode_valid = response.mode.as_deref() == Some("live")
         || (allow_test && response.mode.as_deref() == Some("test"));
+    let enabled = response.enabled && pin_valid && mode_valid;
     Ok(AccountBillingStatus {
         signed_in: true,
-        enabled: response.enabled && pin_valid && mode_valid,
+        enabled,
+        checkout_enabled: enabled && response.checkout_enabled,
     })
 }
 
@@ -1592,6 +1597,7 @@ async fn fetch_billing_status(
         return Ok(AccountBillingStatus {
             signed_in: false,
             enabled: false,
+            checkout_enabled: false,
         });
     };
     let response = client
@@ -1605,6 +1611,7 @@ async fn fetch_billing_status(
         return Ok(AccountBillingStatus {
             signed_in: false,
             enabled: false,
+            checkout_enabled: false,
         });
     }
     if !response.status().is_success() {
@@ -1643,6 +1650,7 @@ pub async fn account_billing_status(
         return Ok(AccountBillingStatus {
             signed_in: false,
             enabled: false,
+            checkout_enabled: false,
         });
     }
     Ok(status)
@@ -1811,6 +1819,7 @@ mod tests {
         let response =
             |enabled, mode: &str, currency: &str, monthly_amount| BillingStatusResponse {
                 enabled,
+                checkout_enabled: true,
                 mode: Some(mode.into()),
                 currency: currency.into(),
                 monthly_amount,
@@ -1843,7 +1852,55 @@ mod tests {
             billing_status_view(response(false, "live", "USD", 3), true, false).unwrap(),
         )
         .unwrap();
-        assert_eq!(view, serde_json::json!({"signedIn":true,"enabled":false}));
+        assert_eq!(
+            view,
+            serde_json::json!({"signedIn":true,"enabled":false,"checkoutEnabled":false})
+        );
+    }
+
+    #[test]
+    fn billing_status_separates_checkout_from_management_and_defaults_closed() {
+        for (json, expected_checkout) in [
+            (
+                r#"{"enabled":true,"checkoutEnabled":true,"mode":"live","currency":"USD","monthlyAmount":3}"#,
+                true,
+            ),
+            (
+                r#"{"enabled":true,"checkoutEnabled":false,"mode":"live","currency":"USD","monthlyAmount":3}"#,
+                false,
+            ),
+            (
+                r#"{"enabled":true,"mode":"live","currency":"USD","monthlyAmount":3}"#,
+                false,
+            ),
+        ] {
+            let response: BillingStatusResponse = serde_json::from_str(json).unwrap();
+            let view = billing_status_view(response, true, false).unwrap();
+            assert!(view.signed_in && view.enabled);
+            assert_eq!(view.checkout_enabled, expected_checkout);
+        }
+        for invalid in [r#""true""#, "1", "null", "[]", "{}"] {
+            let json = format!(
+                r#"{{"enabled":true,"checkoutEnabled":{invalid},"mode":"live","currency":"USD","monthlyAmount":3}}"#
+            );
+            assert!(serde_json::from_str::<BillingStatusResponse>(&json).is_err());
+        }
+        for (enabled, mode, pin) in [
+            (false, "live", true),
+            (true, "test", true),
+            (true, "invalid", true),
+            (true, "live", false),
+        ] {
+            let response = BillingStatusResponse {
+                enabled,
+                checkout_enabled: true,
+                mode: Some(mode.into()),
+                currency: "USD".into(),
+                monthly_amount: 3,
+            };
+            let view = billing_status_view(response, pin, false).unwrap();
+            assert!(!view.enabled && !view.checkout_enabled);
+        }
     }
 
     #[tokio::test]
@@ -1877,21 +1934,37 @@ mod tests {
                 .unwrap(),
             AccountBillingStatus {
                 signed_in: false,
-                enabled: false
+                enabled: false,
+                checkout_enabled: false,
             }
         );
         for (http_status, body, expected) in [
             (
                 200,
                 r#"{"enabled":false,"mode":"live","currency":"USD","monthlyAmount":3}"#.to_owned(),
-                Some((true, false)),
+                Some((true, false, false)),
             ),
             (
                 200,
                 r#"{"enabled":true,"mode":"live","currency":"USD","monthlyAmount":3}"#.to_owned(),
-                Some((true, true)),
+                Some((true, true, false)),
             ),
-            (401, "private provider details".into(), Some((false, false))),
+            (
+                200,
+                r#"{"enabled":true,"checkoutEnabled":true,"mode":"live","currency":"USD","monthlyAmount":3}"#.into(),
+                Some((true, true, true)),
+            ),
+            (
+                200,
+                r#"{"enabled":true,"checkoutEnabled":false,"mode":"live","currency":"USD","monthlyAmount":3}"#.into(),
+                Some((true, true, false)),
+            ),
+            (
+                200,
+                r#"{"enabled":true,"checkoutEnabled":"true","mode":"live","currency":"USD","monthlyAmount":3}"#.into(),
+                None,
+            ),
+            (401, "private provider details".into(), Some((false, false, false))),
             (503, "private provider details".into(), None),
             (200, "x".repeat(4097), None),
             (200, r#"{"enabled":true}"#.into(), None),
@@ -1899,8 +1972,15 @@ mod tests {
             let (base, handle) = server(http_status, body);
             let result = fetch_billing_status(&client, &base, Some(token), true, false).await;
             match expected {
-                Some((signed_in, enabled)) => {
-                    assert_eq!(result.unwrap(), AccountBillingStatus { signed_in, enabled })
+                Some((signed_in, enabled, checkout_enabled)) => {
+                    assert_eq!(
+                        result.unwrap(),
+                        AccountBillingStatus {
+                            signed_in,
+                            enabled,
+                            checkout_enabled
+                        }
+                    )
                 }
                 None => assert!(result.is_err()),
             }

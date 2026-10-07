@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import App, { createRefreshGuard } from "./App";
 import { backend } from "./lib/backend";
 import { brand } from "./lib/brand";
@@ -9,6 +9,35 @@ import { translate, type AppLocale } from "./lib/i18n";
 const rebrandLocales: readonly AppLocale[] = ["ja", "en", "de", "es", "fr", "ko", "pt-BR", "zh-CN", "zh-TW"];
 
 describe(brand.productName, () => {
+  // These interaction tests measure behavior, not Vite's cold compilation of
+  // lazy chunks. Compile real modules once before assertions; keep production
+  // lazy loading and the existing interaction deadlines unchanged.
+  beforeAll(async () => {
+    await Promise.all([
+      import("./components/ConsoleTab"),
+      import("./components/AccountDialog"),
+      import("./components/CreateServerWizard"),
+      import("./components/DeleteServerDialog"),
+      import("./components/ExtensionsTab"),
+      import("./components/FilesPlayersTab"),
+      import("./components/CrossplayInviteDialog"),
+      import("./components/SettingsTab"),
+      import("./components/ServerLabTab"),
+      import("./components/OperationsCenterTab"),
+      import("./components/PalworldOverviewTab"),
+      import("./components/PalworldPlayersTab"),
+      import("./components/PalworldSettingsTab"),
+      import("./components/PalworldConsoleTab"),
+      import("./components/PalworldBusyOverlay"),
+      import("./components/PalworldInviteDialog"),
+      import("./components/ImportServerWizard"),
+      import("./components/SafetyToolsTab"),
+      import("./components/AppSettingsDialog"),
+      import("./components/SupporterBenefitsPanel"),
+      import("./components/InviteDialog"),
+      import("./lib/translations/en"),
+    ]);
+  }, 60_000);
   afterEach(() => vi.restoreAllMocks());
   beforeEach(async () => {
     // These existing wizard tests exercise the below-limit path. Boundary

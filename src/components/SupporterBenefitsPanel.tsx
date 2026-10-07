@@ -44,15 +44,17 @@ export function SupporterBenefitsPanel({ onAccount, locale: localeOverride }: { 
   const paid = member?.plan === "supporter";
   const signedOut = billingStatus?.signedIn === false || memberState === "signed_out" || memberState === "session_expired";
   const billingReady = supportConfig.enabled && billingStatus?.enabled === true && !signedOut && !recoveryFailed;
+  const checkoutReady = billingReady && billingStatus?.checkoutEnabled === true;
+  const actionReady = paid ? billingReady : checkoutReady;
   const billingLabel = !supportConfig.enabled ? t("productionPending") : signedOut ? billingCopy.login
     : billingError || recoveryFailed ? billingCopy.checkFailed : !billingStatus ? billingCopy.checking
-    : billingReady ? paid ? billingCopy.manage : copy.supportButton : t("productionPending");
+    : actionReady ? paid ? billingCopy.manage : copy.supportButton : t("productionPending");
   const count = member ? String(member.registeredCount) : t("countChecking");
   const limit = paid && member?.serverLimit === null ? t("unlimited") : t("serverLimit", { count: String(member?.serverLimit ?? supportConfig.freeServerLimit) });
   const openBilling = async (portal: boolean) => {
     if (busyRef.current || !supportConfig.enabled) return;
     if (signedOut) { onAccount(); return; }
-    if (!billingReady) return;
+    if (!(portal ? billingReady : checkoutReady)) return;
     busyRef.current = true;
     setBusy(true); setNotice("");
     try {
@@ -62,7 +64,7 @@ export function SupporterBenefitsPanel({ onAccount, locale: localeOverride }: { 
       if (!mounted.current) return;
       setBillingStatus(status); setBillingError(false);
       if (!status.signedIn) { onAccount(); return; }
-      if (!status.enabled) { setNotice(t("productionPending")); return; }
+      if (!status.enabled || (!portal && status.checkoutEnabled !== true)) { setNotice(t("productionPending")); return; }
       const url = await backend.accountBillingSession(portal);
       if (!mounted.current) return;
       await openExternalUrl(url);
@@ -114,7 +116,7 @@ export function SupporterBenefitsPanel({ onAccount, locale: localeOverride }: { 
       <button type="button" disabled={busy} onClick={() => void refreshAll()}>{t("refresh")}</button>
     </div>
     <div className="plan-grid member-plan-grid"><article className="current"><h4>{t("freePlan")}</h4><strong>{t("freePrice")}</strong><ul>{copy.freeFeatures.map(item => <li key={item}>{item}</li>)}</ul></article>
-      <article className="member-supporter-plan"><h4>{t("supporterPlan")}</h4><strong>{copy.monthlyPrice.replace("{amount}", formatSupportMonthlyAmount(locale))}</strong><ul>{copy.candidateFeatures.map(item => <li key={item}>{item}</li>)}</ul><p>{billingReady || (supportConfig.enabled && signedOut) ? copy.availableTitle : copy.pendingTitle}</p><p>{billingReady || (supportConfig.enabled && signedOut) ? copy.availableBody : copy.pendingBody}</p><button className="primary-button" type="button" disabled={busy || !supportConfig.enabled || (!signedOut && !billingReady)} onClick={() => void openBilling(paid)}>{billingLabel}</button>
+      <article className="member-supporter-plan"><h4>{t("supporterPlan")}</h4><strong>{copy.monthlyPrice.replace("{amount}", formatSupportMonthlyAmount(locale))}</strong><ul>{copy.candidateFeatures.map(item => <li key={item}>{item}</li>)}</ul><p>{actionReady || (supportConfig.enabled && signedOut) ? copy.availableTitle : copy.pendingTitle}</p><p>{actionReady || (supportConfig.enabled && signedOut) ? copy.availableBody : copy.pendingBody}</p><button className="primary-button" type="button" disabled={busy || !supportConfig.enabled || (!signedOut && !actionReady)} onClick={() => void openBilling(paid)}>{billingLabel}</button>
       {billingError && supportConfig.enabled ? <p role="status">{billingCopy.unavailable}</p> : null}
       {billingReady && !paid ? <button type="button" disabled={busy} onClick={() => void openBilling(true)}>{billingCopy.manage}</button> : null}</article></div>
     <p>{copy.afterStoppingBody}</p><p>{t("unlimitedCaveat")}</p>

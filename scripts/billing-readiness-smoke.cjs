@@ -49,7 +49,7 @@ async function main() {
 backend.accountLoadSession=async()=>window.__billingQa.profile;
 backend.isDesktop=true;
 backend.membershipStatus=async(force)=>{const qa=window.__billingQa;qa.membershipReads.push(force===true);return qa.member;};
-backend.accountBillingStatus=async()=>{const qa=window.__billingQa;qa.statusCalls++;if(qa.scenario==='unavailable')throw Error('fixture-network-error');return {signedIn:qa.scenario!=='signed-out',enabled:!['disabled','signed-out','switched-off'].includes(qa.scenario)};};
+backend.accountBillingStatus=async()=>{const qa=window.__billingQa;qa.statusCalls++;if(qa.scenario==='unavailable')throw Error('fixture-network-error');return {signedIn:qa.scenario!=='signed-out',enabled:!['disabled','signed-out','switched-off'].includes(qa.scenario),checkoutEnabled:!['disabled','signed-out','switched-off'].includes(qa.scenario)};};
 // Explicit recovery is a native-only command. Keep every provider boundary
 // synthetic, rather than falling through to the intentionally rejecting demo.
 backend.accountBillingReconcile=async()=>{const qa=window.__billingQa;qa.recoveryCalls++;if(qa.scenario==='recovery-failed')throw Error('fixture-private-provider-error');if(qa.scenario==='invalid-qualification')qa.member={...qa.member,state:'invalid_qualification'};if(qa.scenario==='paid-recovery')qa.member={...qa.member,plan:'supporter',state:'verified',serverLimit:null};};

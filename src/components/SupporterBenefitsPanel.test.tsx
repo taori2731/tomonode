@@ -10,11 +10,50 @@ vi.mock("../lib/i18n", () => ({ useI18n: () => ({ locale: "en" }) }));
 const member: MembershipView = {plan:"free",state:"free",registeredCount:0,serverLimit:3,expiresAt:null,paidUntil:null,cancelAtPeriodEnd:false,theme:null,previewOptIn:false,billingEnabled:true};
 beforeEach(() => {
   vi.spyOn(backend,"membershipStatus").mockResolvedValue(member);
-  vi.spyOn(backend,"accountBillingStatus").mockResolvedValue({signedIn:true,enabled:true});
+  vi.spyOn(backend,"accountBillingStatus").mockResolvedValue({signedIn:true,enabled:true,checkoutEnabled:true});
   vi.spyOn(backend,"accountBillingReconcile").mockResolvedValue();
 });
 afterEach(() => { supportConfig.enabled=false; vi.restoreAllMocks(); vi.mocked(openExternalUrl).mockReset(); });
 describe("Stripe billing actions", () => {
+  it.each([false, undefined, "true", 1, null])("keeps new purchases closed for checkoutEnabled=%s without stopping Portal or recovery", async checkoutEnabled => {
+    supportConfig.enabled=true;
+    vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:true,checkoutEnabled} as unknown as Awaited<ReturnType<typeof backend.accountBillingStatus>>);
+    const billing=vi.spyOn(backend,"accountBillingSession").mockResolvedValue("https://billing.stripe.com/p/session/test");
+    render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Enrollment is being prepared"})).toBeDisabled());
+    const manage=screen.getByRole("button",{name:"Manage subscription and payments"});
+    expect(manage).toBeEnabled();
+    fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
+    await waitFor(()=>expect(backend.accountBillingReconcile).toHaveBeenCalledOnce());
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Manage subscription and payments"})).toBeEnabled());
+    fireEvent.click(screen.getByRole("button",{name:"Manage subscription and payments"}));
+    await waitFor(()=>expect(billing).toHaveBeenCalledWith(true));
+    expect(billing).not.toHaveBeenCalledWith(false);
+    expect(openExternalUrl).toHaveBeenCalledWith("https://billing.stripe.com/p/session/test");
+  });
+  it("rechecks the independent purchase flag immediately before Checkout", async () => {
+    supportConfig.enabled=true;
+    const billing=vi.spyOn(backend,"accountBillingSession");
+    render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Subscribe with Stripe"})).toBeEnabled());
+    vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:true,checkoutEnabled:false});
+    fireEvent.click(screen.getByRole("button",{name:"Subscribe with Stripe"}));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Enrollment is being prepared"})).toBeDisabled());
+    expect(billing).not.toHaveBeenCalled(); expect(openExternalUrl).not.toHaveBeenCalled();
+  });
+  it("keeps paid subscribers' management available when new sales stop", async () => {
+    supportConfig.enabled=true;
+    vi.mocked(backend.membershipStatus).mockResolvedValue({...member,plan:"supporter",state:"verified",serverLimit:null,cancelAtPeriodEnd:true});
+    vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:true,checkoutEnabled:false});
+    const billing=vi.spyOn(backend,"accountBillingSession").mockResolvedValue("https://billing.stripe.com/p/session/test");
+    render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    const manage=await screen.findByRole("button",{name:"Manage subscription and payments"});
+    await waitFor(()=>expect(manage).toBeEnabled());
+    fireEvent.click(manage);
+    await waitFor(()=>expect(billing).toHaveBeenCalledWith(true));
+    expect(screen.getByText("Cancellation scheduled; benefits remain available through the paid period")).toBeInTheDocument();
+    expect(screen.queryByRole("button",{name:"Subscribe with Stripe"})).not.toBeInTheDocument();
+  });
   it("reconciles only on explicit refresh, then reads the signed membership without opening Checkout", async () => {
     supportConfig.enabled=true;
     const billing=vi.spyOn(backend,"accountBillingSession");
@@ -141,7 +180,7 @@ describe("Stripe billing actions", () => {
     render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
     await screen.findByText(/Could not check billing availability/, {selector:"p"});
     expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
-    vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:true});
+    vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:true,checkoutEnabled:true});
     fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
     await waitFor(()=>expect(screen.getByRole("button",{name:"Subscribe with Stripe"})).toBeEnabled());
     expect(billing).not.toHaveBeenCalled();
@@ -182,7 +221,7 @@ describe("Stripe billing actions", () => {
   });
   it("ignores a stale readiness result superseded by refresh", async () => {
     supportConfig.enabled=true;
-    let resolve!: (status: {signedIn:boolean;enabled:boolean})=>void;
+    let resolve!: (status: {signedIn:boolean;enabled:boolean;checkoutEnabled?:boolean})=>void;
     vi.mocked(backend.accountBillingStatus).mockImplementation(()=>new Promise(done=>{resolve=done;}));
     render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
     await screen.findByText("Free plan");
@@ -191,7 +230,7 @@ describe("Stripe billing actions", () => {
     vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:false});
     fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
     await waitFor(()=>expect(screen.getByRole("button",{name:"Enrollment is being prepared"})).toBeDisabled());
-    stale({signedIn:true,enabled:true});
+    stale({signedIn:true,enabled:true,checkoutEnabled:true});
     await Promise.resolve(); await Promise.resolve();
     expect(screen.getByRole("button",{name:"Enrollment is being prepared"})).toBeDisabled();
   });
