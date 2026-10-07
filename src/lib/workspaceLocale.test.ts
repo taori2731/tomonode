@@ -13,19 +13,19 @@ describe("workspace release announcements", () => {
       const announcements = workspaceAnnouncements(locale);
       expect(announcements).toHaveLength(3);
       expect(announcements[0].title).toContain(packageMetadata.version);
-      expect(announcements[0].date).toBe("2026-09-23");
+      expect(announcements[0].date).toBe("2026-10-08");
       expect(announcements.map((item) => item.id)).toEqual([packageMetadata.version, "0.5.1", "0.5.0"]);
       expect(new Set(announcements.map((item) => item.id)).size).toBe(announcements.length);
       expect(announcements.every((item) => item.body.trim().length > 0)).toBe(true);
     }
   });
 
-  it("describes the current Mod-management and startup-check improvements in Japanese", () => {
+  it("describes checkout permission separately from contract management in Japanese", () => {
     const announcements = workspaceAnnouncements("ja");
-    expect(announcements[0].body).toContain("Minecraft版の範囲メタデータを評価");
-    expect(announcements[0].body).toContain("トップレベルModの重複として数えません");
-    expect(announcements[0].body).toContain("ローダーの起動結果記録");
-    expect(announcements[0].body).toContain("バックアップ後に行うMod隔離・復元");
+    expect(announcements[0].body).toContain("受付が明示的に許可されている場合だけ");
+    expect(announcements[0].body).toContain("Stripeを開く直前にも再確認");
+    expect(announcements[0].body).toContain("既存契約の管理と手動の会員状態再確認は維持");
+    expect(announcements[0].body).toContain("本番購入は引き続き準備中");
     expect(announcements[1].body).toContain("固定行数上限をなくし");
     expect(announcements[2].body).toContain("画面外の背景サーバー監視を停止");
   });
