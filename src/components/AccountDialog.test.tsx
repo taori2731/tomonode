@@ -229,7 +229,7 @@ describe("AccountDialog", () => {
     vi.spyOn(backend, "accountBrowserAuthStart").mockResolvedValue(browserAuthStart);
     vi.spyOn(backend, "accountBrowserAuthPoll").mockImplementation(async () => {
       vi.mocked(backend.membershipStatus).mockResolvedValue({...membership,state:"free"});
-      vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:true});
+      vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:true,checkoutEnabled:true});
       return {status:"complete",account:profile};
     });
     vi.spyOn(backend, "accountBrowserAuthCancel").mockResolvedValue(undefined);
