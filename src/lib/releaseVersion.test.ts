@@ -10,6 +10,7 @@ import nativeUpdater from "../../src-tauri/src/app_update.rs?raw";
 import { supportConfig } from "./supporterConfig";
 import { languageOptions, type AppLocale } from "./i18n";
 import { releaseAnnouncements } from "./releaseNews";
+import releaseNotes from "../../docs/releases/0.5.18.md?raw";
 
 const releaseVersion = "0.5.18";
 
@@ -50,6 +51,9 @@ describe("release version alignment", () => {
     expect(releaseWorkflow).toContain("Refusing to reuse an existing git tag");
     expect(releaseWorkflow).toContain("if: ${{ inputs.publish }}");
     expect(supportConfig.enabled).toBe(true);
+    expect(releaseNotes).toContain(`TomoNode ${releaseVersion}`);
+    expect(releaseNotes).toContain("この更新だけでは販売を開始せず");
+    expect(releaseWorkflow).toContain("Purchases still require explicit authenticated server checkout permission");
     expect(tauriConfig.identifier).toBe("local.minecraft-server-hub.desktop");
     expect(nativeUpdater.match(/const DEFAULT_UPDATE_ENDPOINT: &str =\s*"([^"]+)"/)?.[1]).toBe(
       "https://github.com/taori2731/tomonode-releases/releases/latest/download/latest.json",

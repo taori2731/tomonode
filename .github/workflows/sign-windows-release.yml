@@ -283,7 +283,7 @@ jobs:
             -Version $env:RELEASE_VERSION `
             -DownloadUrl $downloadUrl `
             -InstallerPath $env:INSTALLER_PATH `
-            -Notes "TomoNode $($env:RELEASE_VERSION): show the exact billing preparation response as preparing instead of a connection failure, including manual membership refresh. Signature, session, expiry and live/test checks remain unchanged. Production purchases remain disabled; no paid benefits are granted by preparation status." `
+            -Notes "TomoNode $($env:RELEASE_VERSION): enable account billing connectivity after login. Purchases still require explicit authenticated server checkout permission. This update alone does not open sales or grant paid benefits. Free features, saved data, signature verification and live/test separation remain unchanged." `
             -OutputPath "artifacts/release/latest.json"
 
       - name: Verify the complete local release bundle
