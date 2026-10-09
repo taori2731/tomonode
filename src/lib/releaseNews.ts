@@ -108,10 +108,23 @@ const preparationCopy: Record<AppLocale, { title: string; body: string }> = {
   "pt-BR": { title: "Corrigir o status de preparação da assinatura", body: "Quando a cobrança Stripe em produção não está configurada, mostramos preparação em vez de falha de conexão. A verificação manual não exibe mais um erro falso. As compras continuam desativadas e nenhum benefício pago é concedido." },
 };
 
+const billingConnectionCopy: Record<AppLocale, { title: string; body: string }> = {
+  ja: { title: "アカウントのプラン接続を有効化", body: "ログイン後にStripeの受付状態と契約管理へ接続します。購入は決済直前にもサーバーの許可を確認します。この更新だけでは販売を開始しません。無料機能と保存データは維持します。" },
+  en: { title: "Connect account plans", body: "Stripe requires login and server approval. This update does not start sales. Free features and data stay intact." },
+  "zh-CN": { title: "启用账户方案连接", body: "登录后连接Stripe方案。购买需服务器许可，并在结账前再次确认。此更新本身不会开始销售，免费功能与保存数据不变。" },
+  "zh-TW": { title: "啟用帳戶方案連線", body: "登入後連接Stripe方案。購買需伺服器許可，並在結帳前再次確認。此更新本身不會開始銷售，免費功能與儲存資料不變。" },
+  ko: { title: "계정 플랜 연결 활성화", body: "로그인 후 Stripe 플랜에 연결합니다. 구매 전 서버 허가를 다시 확인합니다. 이 업데이트만으로 판매가 시작되지 않습니다. 무료 기능과 저장 데이터는 유지됩니다." },
+  es: { title: "Conectar el plan", body: "Stripe requiere inicio de sesión y permiso de compra del servidor. No inicia ventas. Funciones gratuitas y datos intactos." },
+  de: { title: "Abonnement verbinden", body: "Stripe benötigt Anmeldung und Serverfreigabe. Das Update startet keinen Verkauf. Kostenlose Funktionen und Daten bleiben erhalten." },
+  fr: { title: "Connecter les abonnements", body: "Stripe nécessite connexion et autorisation du serveur. Pas de lancement des ventes. Fonctions gratuites et données préservées." },
+  "pt-BR": { title: "Conectar o plano", body: "Stripe exige login e permissão de compra do servidor. Não inicia vendas. Recursos gratuitos e dados preservados." },
+};
+
 export function releaseAnnouncements(locale: AppLocale): readonly ReleaseAnnouncement[] {
   const text = copy[locale];
   return [
-    { id: CURRENT_RELEASE_NEWS_VERSION, date: "2026-10-10", tag: "FIX", title: `${brand.productName} ${CURRENT_RELEASE_NEWS_VERSION} — ${preparationCopy[locale].title}`, body: preparationCopy[locale].body },
+    { id: CURRENT_RELEASE_NEWS_VERSION, date: "2026-10-10", tag: "FIX", title: `${brand.productName} ${CURRENT_RELEASE_NEWS_VERSION} — ${billingConnectionCopy[locale].title}`, body: billingConnectionCopy[locale].body },
+    { id: "0.5.17", date: "2026-10-10", tag: "FIX", title: `${brand.productName} 0.5.17 — ${preparationCopy[locale].title}`, body: preparationCopy[locale].body },
     { id: "0.5.16", date: "2026-10-08", tag: "FIX", title: text.currentTitle.replace(CURRENT_RELEASE_NEWS_VERSION, "0.5.16"), body: text.currentBody },
     { id: "0.5.1", date: "2026-09-21", tag: "APP", title: text.previousTitle, body: text.previousBody },
     { id: "0.5.0", date: "2026-09-21", tag: "APP", title: text.olderTitle, body: text.olderBody },

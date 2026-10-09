@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { backend } from "../lib/backend";
 import { brand } from "../lib/brand";
 import { I18nProvider, translate, type AppLocale } from "../lib/i18n";
@@ -8,9 +8,11 @@ import { supportConfig } from "../lib/supporterConfig";
 import type { RuntimeStatus } from "../types";
 import { AppSettingsDialog } from "./AppSettingsDialog";
 
+const originalIntegrationEnabled = supportConfig.enabled;
+beforeEach(() => { supportConfig.enabled = false; });
 afterEach(() => {
   vi.restoreAllMocks();
-  supportConfig.enabled = false;
+  supportConfig.enabled = originalIntegrationEnabled;
   localStorage.clear();
 });
 

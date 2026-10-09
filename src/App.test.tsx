@@ -3,10 +3,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import App, { createRefreshGuard } from "./App";
 import { backend } from "./lib/backend";
 import { brand } from "./lib/brand";
+import { supportConfig } from "./lib/supporterConfig";
 import { getRebrandCopy } from "./lib/rebrandLocale";
 import { translate, type AppLocale } from "./lib/i18n";
 
 const rebrandLocales: readonly AppLocale[] = ["ja", "en", "de", "es", "fr", "ko", "pt-BR", "zh-CN", "zh-TW"];
+const originalIntegrationEnabled = supportConfig.enabled;
 
 describe(brand.productName, () => {
   // These interaction tests measure behavior, not Vite's cold compilation of
@@ -38,8 +40,9 @@ describe(brand.productName, () => {
       import("./lib/translations/en"),
     ]);
   }, 60_000);
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => { supportConfig.enabled = originalIntegrationEnabled; vi.restoreAllMocks(); });
   beforeEach(async () => {
+    supportConfig.enabled = false;
     // These existing wizard tests exercise the below-limit path. Boundary
     // scenarios use an explicit authoritative count in membership.test.tsx.
     vi.spyOn(backend, "membershipStatus").mockResolvedValue({ plan:"free", state:"free", registeredCount:2, serverLimit:3, expiresAt:null, paidUntil:null, cancelAtPeriodEnd:false, theme:null, previewOptIn:false, billingEnabled:false });

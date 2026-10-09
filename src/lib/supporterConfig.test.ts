@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { formatSupportMonthlyAmount, supportConfig } from "./supporterConfig";
 
 describe("Stripe support configuration", () => {
-  it("keeps enrollment disabled while preparing USD 3/month plus tax", () => {
-    expect(supportConfig.enabled).toBe(false);
+  it("enables server-gated billing integration at USD 3/month plus tax", () => {
+    expect(supportConfig.enabled).toBe(true);
     expect(supportConfig.provider).toBe("stripe");
     expect(supportConfig.monthlyAmount).toBe(3);
     expect(supportConfig.currency).toBe("USD");
