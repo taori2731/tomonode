@@ -10,8 +10,9 @@ import nativeUpdater from "../../src-tauri/src/app_update.rs?raw";
 import { supportConfig } from "./supporterConfig";
 import { languageOptions, type AppLocale } from "./i18n";
 import { releaseAnnouncements } from "./releaseNews";
+import releaseNotes from "../../docs/releases/0.5.18.md?raw";
 
-const releaseVersion = "0.5.17";
+const releaseVersion = "0.5.18";
 
 describe("release version alignment", () => {
   it.each(languageOptions.filter(option => option.value !== "system"))("publishes current update news for $value", ({ value }) => {
@@ -22,6 +23,7 @@ describe("release version alignment", () => {
     expect(current.title).toContain(releaseVersion);
     expect(current.body.trim().length).toBeGreaterThan(40);
     expect(current.body).toContain("Stripe");
+    expect(releaseAnnouncements(value as AppLocale)[1].id).toBe("0.5.17");
   });
   it("keeps app manifests and the browser demo on the same release candidate", async () => {
     const cargoManifestVersion = cargoManifest.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
@@ -38,7 +40,7 @@ describe("release version alignment", () => {
     expect(await backend.getAppVersion()).toBe(releaseVersion);
     expect((await backend.checkAppUpdate()).currentVersion).toBe(releaseVersion);
   });
-  it("keeps the new draft guarded without enabling purchases or changing the updater identity", () => {
+  it("keeps the release guarded while enabling server-gated billing integration, not sale authority", () => {
     expect(releaseWorkflow).toContain(`if ($env:RELEASE_VERSION -ne "${releaseVersion}")`);
     expect(releaseWorkflow).toContain(`if ($env:RELEASE_TAG -ne "v${releaseVersion}")`);
     expect(releaseWorkflow).not.toContain("0.5.15");
@@ -48,7 +50,10 @@ describe("release version alignment", () => {
     expect(releaseWorkflow).toContain("Refusing to overwrite an existing release");
     expect(releaseWorkflow).toContain("Refusing to reuse an existing git tag");
     expect(releaseWorkflow).toContain("if: ${{ inputs.publish }}");
-    expect(supportConfig.enabled).toBe(false);
+    expect(supportConfig.enabled).toBe(true);
+    expect(releaseNotes).toContain(`TomoNode ${releaseVersion}`);
+    expect(releaseNotes).toContain("この更新だけでは販売を開始せず");
+    expect(releaseWorkflow).toContain("Purchases still require explicit authenticated server checkout permission");
     expect(tauriConfig.identifier).toBe("local.minecraft-server-hub.desktop");
     expect(nativeUpdater.match(/const DEFAULT_UPDATE_ENDPOINT: &str =\s*"([^"]+)"/)?.[1]).toBe(
       "https://github.com/taori2731/tomonode-releases/releases/latest/download/latest.json",

@@ -8,12 +8,14 @@ import type { MembershipView } from "../lib/membership";
 vi.mock("./ExternalLinkHandler", () => ({ openExternalUrl: vi.fn() }));
 vi.mock("../lib/i18n", () => ({ useI18n: () => ({ locale: "en" }) }));
 const member: MembershipView = {plan:"free",state:"free",registeredCount:0,serverLimit:3,expiresAt:null,paidUntil:null,cancelAtPeriodEnd:false,theme:null,previewOptIn:false,billingEnabled:true};
+const originalIntegrationEnabled = supportConfig.enabled;
 beforeEach(() => {
+  supportConfig.enabled=false;
   vi.spyOn(backend,"membershipStatus").mockResolvedValue(member);
   vi.spyOn(backend,"accountBillingStatus").mockResolvedValue({signedIn:true,enabled:true,checkoutEnabled:true});
   vi.spyOn(backend,"accountBillingReconcile").mockResolvedValue();
 });
-afterEach(() => { supportConfig.enabled=false; vi.restoreAllMocks(); vi.mocked(openExternalUrl).mockReset(); });
+afterEach(() => { supportConfig.enabled=originalIntegrationEnabled; vi.restoreAllMocks(); vi.mocked(openExternalUrl).mockReset(); });
 describe("Stripe billing actions", () => {
   it.each(["unavailable","invalid_qualification","clock_invalid","offline"])("keeps a refresh warning for %s", async state => {
     vi.mocked(backend.membershipStatus).mockResolvedValue({...member,state,billingEnabled:false});

@@ -1,12 +1,15 @@
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import { backend } from "../lib/backend";
 import { I18nProvider } from "../lib/i18n";
 import { previewAvailable, previewFeatures, useMembership, type MembershipView } from "../lib/membership";
 import { SupporterBenefitsPanel } from "./SupporterBenefitsPanel";
+import { supportConfig } from "../lib/supporterConfig";
 const free: MembershipView={plan:"free",state:"signed_out",registeredCount:5,serverLimit:3,expiresAt:null,paidUntil:null,cancelAtPeriodEnd:false,theme:null,previewOptIn:false,billingEnabled:false};
-afterEach(()=>{vi.restoreAllMocks();vi.useRealTimers();localStorage.clear();});
+const originalIntegrationEnabled = supportConfig.enabled;
+beforeEach(()=>{supportConfig.enabled=false;});
+afterEach(()=>{supportConfig.enabled=originalIntegrationEnabled;vi.restoreAllMocks();vi.useRealTimers();localStorage.clear();});
 describe("shared membership UI boundaries",()=>{
   it("grandfathered Free users keep existing operations but get no new wizard",async()=>{
     localStorage.setItem("server-hub:language:v1","ja");
