@@ -17,6 +17,7 @@ mod java;
 mod launch_observer;
 mod legacy_cleanup;
 mod membership;
+mod membership_verifier;
 mod migration;
 mod mod_management;
 mod models;

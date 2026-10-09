@@ -15,6 +15,25 @@ beforeEach(() => {
 });
 afterEach(() => { supportConfig.enabled=false; vi.restoreAllMocks(); vi.mocked(openExternalUrl).mockReset(); });
 describe("Stripe billing actions", () => {
+  it.each(["unavailable","invalid_qualification","clock_invalid","offline"])("keeps a refresh warning for %s", async state => {
+    vi.mocked(backend.membershipStatus).mockResolvedValue({...member,state,billingEnabled:false});
+    render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    await screen.findByText(/Membership refresh failed/);
+    expect(screen.getByRole("button",{name:"Enrollment is being prepared"})).toBeDisabled();
+  });
+  it("shows billing preparation without a refresh failure or granting paid rights", async () => {
+    vi.mocked(backend.membershipStatus).mockResolvedValue({...member,state:"not_configured",billingEnabled:false});
+    const billing=vi.spyOn(backend,"accountBillingSession");
+    render(<SupporterBenefitsPanel onAccount={vi.fn()} />);
+    await screen.findByText("Membership connection is being prepared");
+    fireEvent.click(screen.getByRole("button",{name:"Refresh membership status"}));
+    await waitFor(()=>expect(backend.membershipStatus).toHaveBeenCalledWith(true));
+    await waitFor(()=>expect(screen.getByRole("button",{name:"Refresh membership status"})).toBeEnabled());
+    expect(screen.queryByText(/Membership refresh failed/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button",{name:"Enrollment is being prepared"})).toBeDisabled();
+    expect(backend.accountBillingReconcile).not.toHaveBeenCalled();
+    expect(billing).not.toHaveBeenCalled();
+  });
   it.each([false, undefined, "true", 1, null])("keeps new purchases closed for checkoutEnabled=%s without stopping Portal or recovery", async checkoutEnabled => {
     supportConfig.enabled=true;
     vi.mocked(backend.accountBillingStatus).mockResolvedValue({signedIn:true,enabled:true,checkoutEnabled} as unknown as Awaited<ReturnType<typeof backend.accountBillingStatus>>);

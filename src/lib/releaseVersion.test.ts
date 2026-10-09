@@ -11,13 +11,13 @@ import { supportConfig } from "./supporterConfig";
 import { languageOptions, type AppLocale } from "./i18n";
 import { releaseAnnouncements } from "./releaseNews";
 
-const releaseVersion = "0.5.16";
+const releaseVersion = "0.5.17";
 
 describe("release version alignment", () => {
   it.each(languageOptions.filter(option => option.value !== "system"))("publishes current update news for $value", ({ value }) => {
     const current = releaseAnnouncements(value as AppLocale)[0];
     expect(current.id).toBe(releaseVersion);
-    expect(current.date).toBe("2026-10-08");
+    expect(current.date).toBe("2026-10-10");
     expect(current.tag).toBe("FIX");
     expect(current.title).toContain(releaseVersion);
     expect(current.body.trim().length).toBeGreaterThan(40);
