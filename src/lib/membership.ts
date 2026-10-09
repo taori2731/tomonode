@@ -38,7 +38,9 @@ export function useMembership() {
     try {
       const value = await backend.membershipStatus(force);
       setMember(value);
-      const confirmed = !["unavailable", "offline", "invalid_qualification", "clock_invalid", "not_configured"].includes(value.state);
+      // Preparation is an explicit server state, not a failed connection or
+      // evidence of paid membership. Native qualification still gates rights.
+      const confirmed = !["unavailable", "offline", "invalid_qualification", "clock_invalid"].includes(value.state);
       setError(confirmed ? "" : "membership.refresh_failed");
       return confirmed;
     }

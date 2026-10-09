@@ -96,10 +96,23 @@ const copy: Record<AppLocale, ReleaseNewsCopy> = {
   },
 };
 
+const preparationCopy: Record<AppLocale, { title: string; body: string }> = {
+  ja: { title: "会員資格の準備中表示を修正", body: "Stripeの本番接続が未準備の場合は、通信失敗ではなく接続準備中と表示します。手動の再確認でも誤った失敗警告を出しません。新規購入は引き続き無効で、有料特典は付与しません。" },
+  en: { title: "Clarify membership preparation status", body: "When production Stripe billing is not configured, membership shows a preparation status instead of a connection failure. Manual refresh no longer shows a false error. Purchases remain disabled and no paid benefits are granted." },
+  "zh-CN": { title: "修正会员资格准备中提示", body: "Stripe正式计费尚未配置时，显示连接准备中，而不是通信失败。手动重新检查也不会显示错误的失败提示。购买仍然禁用，不会授予付费权益。" },
+  "zh-TW": { title: "修正會員資格準備中提示", body: "Stripe正式計費尚未設定時，顯示連線準備中，而不是通訊失敗。手動重新檢查也不會顯示錯誤的失敗提示。購買仍然停用，不會授予付費權益。" },
+  ko: { title: "회원 자격 준비 상태 표시 수정", body: "Stripe 운영 결제가 설정되지 않았을 때 연결 실패 대신 준비 중으로 표시합니다. 수동 재확인에서도 잘못된 실패 경고가 나타나지 않습니다. 구매는 계속 비활성화되며 유료 혜택은 부여하지 않습니다." },
+  es: { title: "Aclarar el estado de preparación de la membresía", body: "Si la facturación de Stripe en producción no está configurada, se muestra un estado de preparación y no un fallo de conexión. La comprobación manual ya no muestra un error falso. Las compras siguen desactivadas y no se conceden beneficios de pago." },
+  de: { title: "Vorbereitungsstatus der Mitgliedschaft korrigieren", body: "Wenn Stripe im Produktivbetrieb noch nicht eingerichtet ist, wird Vorbereitung statt eines Verbindungsfehlers angezeigt. Auch die manuelle Prüfung zeigt keinen falschen Fehler mehr. Käufe bleiben deaktiviert und kostenpflichtige Vorteile werden nicht gewährt." },
+  fr: { title: "Clarifier la préparation de l’abonnement", body: "Si la facturation Stripe en production n’est pas configurée, un statut de préparation remplace l’erreur de connexion. La vérification manuelle n’affiche plus de fausse erreur. Les achats restent désactivés et aucun avantage payant n’est accordé." },
+  "pt-BR": { title: "Corrigir o status de preparação da assinatura", body: "Quando a cobrança Stripe em produção não está configurada, mostramos preparação em vez de falha de conexão. A verificação manual não exibe mais um erro falso. As compras continuam desativadas e nenhum benefício pago é concedido." },
+};
+
 export function releaseAnnouncements(locale: AppLocale): readonly ReleaseAnnouncement[] {
   const text = copy[locale];
   return [
-    { id: CURRENT_RELEASE_NEWS_VERSION, date: "2026-10-08", tag: "FIX", title: text.currentTitle, body: text.currentBody },
+    { id: CURRENT_RELEASE_NEWS_VERSION, date: "2026-10-10", tag: "FIX", title: `${brand.productName} ${CURRENT_RELEASE_NEWS_VERSION} — ${preparationCopy[locale].title}`, body: preparationCopy[locale].body },
+    { id: "0.5.16", date: "2026-10-08", tag: "FIX", title: text.currentTitle.replace(CURRENT_RELEASE_NEWS_VERSION, "0.5.16"), body: text.currentBody },
     { id: "0.5.1", date: "2026-09-21", tag: "APP", title: text.previousTitle, body: text.previousBody },
     { id: "0.5.0", date: "2026-09-21", tag: "APP", title: text.olderTitle, body: text.olderBody },
   ];

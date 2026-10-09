@@ -1,14 +1,14 @@
 //! One native authority for registration, appearance, previews and notifications.
 //! Only a pinned server signature + current Credential Manager session grant paid rights.
+use crate::membership_verifier::{Claims, Pin, SignedLease, session_binding};
 use crate::{
     AppState, account_auth,
     error::{AppError, AppResult},
     secure_secrets,
 };
+#[cfg(test)]
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::{
     sync::Mutex,
     time::{Duration, Instant},
@@ -16,36 +16,9 @@ use std::{
 use tauri::State;
 
 pub const FREE_LIMIT: usize = 3;
-const MAX_LEASE_SECONDS: i64 = 86_400;
 const LEASE_SERVICE: &str = "TomoNode Membership Lease";
 const PREF_SERVICE: &str = "TomoNode Membership Preferences";
 
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SignedLease {
-    payload: String,
-    signature: String,
-    key_id: String,
-}
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Claims {
-    audience: String,
-    subject: String,
-    session_binding: String,
-    plan: String,
-    mode: String,
-    issued_at: i64,
-    expires_at: i64,
-    paid_until: i64,
-    cancel_at_period_end: bool,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Pin {
-    public_key: String,
-    key_id: String,
-}
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Persisted {
@@ -100,11 +73,39 @@ pub struct MembershipService {
     free_state: Mutex<String>,
 }
 
-fn session_binding(token: &str) -> String {
-    hex::encode(Sha256::digest(token.as_bytes()))
-}
 fn invalid() -> AppError {
     AppError::Validation("会員資格の署名・期限を確認できません".into())
+}
+// Preparation is not a network failure, nor evidence of paid membership.
+// Only the fixed API's exact bounded 503 response may select this state.
+fn failed_connection(status: u16, body: Option<&serde_json::Value>) -> &'static str {
+    if status == 503
+        && body
+            .and_then(|v| v.get("error"))
+            .and_then(serde_json::Value::as_str)
+            == Some("BILLING_NOT_CONFIGURED")
+    {
+        "not_configured"
+    } else {
+        "offline"
+    }
+}
+fn unqualified_state<'a>(connection: &'a str, reason: &'a str) -> &'a str {
+    match connection {
+        "not_configured" => "not_configured",
+        "offline" => "unavailable",
+        _ if reason.is_empty() => "free",
+        _ => reason,
+    }
+}
+fn qualified_connection(connection: &str) -> &str {
+    // A valid signed, unexpired cache remains usable when billing is paused.
+    // Do not display a paused server as fresh verification or extend its lease.
+    if connection == "not_configured" {
+        "offline"
+    } else {
+        connection
+    }
 }
 fn verify(
     lease: &SignedLease,
@@ -113,43 +114,7 @@ fn verify(
     pin: &Pin,
     allow_test: bool,
 ) -> AppResult<Claims> {
-    if lease.key_id != pin.key_id || lease.payload.len() > 4096 {
-        return Err(invalid());
-    }
-    let key: [u8; 32] = URL_SAFE_NO_PAD
-        .decode(&pin.public_key)
-        .map_err(|_| invalid())?
-        .try_into()
-        .map_err(|_| invalid())?;
-    let signature = Signature::from_slice(
-        &URL_SAFE_NO_PAD
-            .decode(&lease.signature)
-            .map_err(|_| invalid())?,
-    )
-    .map_err(|_| invalid())?;
-    let message = URL_SAFE_NO_PAD
-        .decode(&lease.payload)
-        .map_err(|_| invalid())?;
-    VerifyingKey::from_bytes(&key)
-        .map_err(|_| invalid())?
-        .verify_strict(&message, &signature)
-        .map_err(|_| invalid())?;
-    let claims: Claims = serde_json::from_slice(&message).map_err(|_| invalid())?;
-    if claims.audience != "tomonode-desktop"
-        || claims.subject.is_empty()
-        || claims.plan != "supporter"
-        || claims.session_binding != session_binding(token)
-        || !(claims.mode == "live" || (allow_test && claims.mode == "test"))
-        || claims.issued_at > now + 60
-        || claims.expires_at <= now
-        || claims.paid_until <= now
-        || claims.expires_at > claims.paid_until
-        || claims.expires_at <= claims.issued_at
-        || claims.expires_at - claims.issued_at > MAX_LEASE_SECONDS
-    {
-        return Err(invalid());
-    }
-    Ok(claims)
+    crate::membership_verifier::verify(lease, token, now, pin, allow_test).map_err(|_| invalid())
 }
 
 // Only the isolated test runner can supply an ephemeral pin. This is absent
@@ -300,6 +265,12 @@ impl MembershipService {
                         &reason
                     }));
                 }
+                Ok(response) if response.status().as_u16() == 503 => {
+                    let body = secure_secrets::bounded_json::<serde_json::Value>(response, 4096)
+                        .await
+                        .ok();
+                    connection = failed_connection(503, body.as_ref()).into();
+                }
                 _ => connection = "offline".into(),
             }
             *self.connection.lock().unwrap() = connection.clone();
@@ -307,13 +278,10 @@ impl MembershipService {
         let cached = self.cached.lock().unwrap().clone();
         let Some(mut stored) = cached else {
             let reason = self.free_state.lock().unwrap().clone();
-            return Ok(MembershipView::free(if connection == "offline" {
-                "unavailable"
-            } else if reason.is_empty() {
-                "free"
-            } else {
-                &reason
-            }));
+            return Ok(MembershipView::free(unqualified_state(
+                &connection,
+                &reason,
+            )));
         };
         if account_auth::membership_session_token()?.as_deref() != Some(&token) {
             self.clear()?;
@@ -349,7 +317,7 @@ impl MembershipService {
                 == Some("on");
         Ok(MembershipView {
             plan: "supporter".into(),
-            state: connection.into(),
+            state: qualified_connection(&connection).into(),
             registered_count: 0,
             server_limit: None,
             expires_at: Some(claims.expires_at * 1000),
@@ -466,6 +434,45 @@ pub async fn membership_feature_available(
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
+    #[test]
+    fn billing_preparation_requires_the_exact_service_unavailable_response() {
+        let prepared = serde_json::json!({"error":"BILLING_NOT_CONFIGURED"});
+        assert_eq!(failed_connection(503, Some(&prepared)), "not_configured");
+        for status in [200, 401, 403, 429, 500, 502, 504] {
+            assert_eq!(failed_connection(status, Some(&prepared)), "offline");
+        }
+        for body in [
+            serde_json::json!({"error":"BILLING_UNAVAILABLE"}),
+            serde_json::json!({"state":"not_configured"}),
+            serde_json::json!({"error":true}),
+            serde_json::json!(null),
+        ] {
+            assert_eq!(failed_connection(503, Some(&body)), "offline");
+        }
+        assert_eq!(failed_connection(503, None), "offline");
+    }
+    #[test]
+    fn preparation_without_signed_qualification_does_not_grant_benefits() {
+        let view = MembershipView::free(unqualified_state("not_configured", "free"));
+        assert_eq!(view.state, "not_configured");
+        assert!(!view.supporter());
+        assert_eq!(view.server_limit, Some(3));
+        assert_eq!(
+            unqualified_state("offline", "not_configured"),
+            "unavailable"
+        );
+        assert_eq!(unqualified_state("verified", "past_due"), "past_due");
+        assert_eq!(unqualified_state("verified", ""), "free");
+    }
+    #[test]
+    fn paused_billing_preserves_only_the_existing_unexpired_signed_cache() {
+        assert_eq!(qualified_connection("not_configured"), "offline");
+        assert_eq!(qualified_connection("verified"), "verified");
+        let (lease, pin) = fixture();
+        assert!(verify(&lease, "token", 1500, &pin, false).is_ok());
+        assert!(verify(&lease, "token", 2000, &pin, false).is_err());
+        assert!(verify(&lease, "other-session", 1500, &pin, false).is_err());
+    }
     #[test]
     fn preview_opt_in_is_paid_and_public_release_remains_free() {
         let mut view = MembershipView::free("free");
